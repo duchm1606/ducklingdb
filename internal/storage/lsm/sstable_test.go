@@ -28,12 +28,15 @@ func TestSSTableWriteAndRead(t *testing.T) {
 	defer reader.Close()
 
 	for _, entry := range entries {
-		value, found, err := reader.Get(entry.key)
+		value, found, tombstone, err := reader.Get(entry.key)
 		if err != nil {
 			t.Fatalf("Get(%q) error = %v", entry.key, err)
 		}
 		if !found {
 			t.Fatalf("Get(%q) found = false, want true", entry.key)
+		}
+		if tombstone {
+			t.Fatalf("Get(%q) tombstone = true, want false", entry.key)
 		}
 		if !bytes.Equal(value, entry.value) {
 			t.Fatalf("Get(%q) value = %q, want %q", entry.key, value, entry.value)
@@ -58,7 +61,7 @@ func TestSSTableGet_NotFound(t *testing.T) {
 	defer reader.Close()
 
 	for _, key := range [][]byte{[]byte("b"), []byte("d"), []byte("z")} {
-		value, found, err := reader.Get(key)
+		value, found, _, err := reader.Get(key)
 		if err != nil {
 			t.Fatalf("Get(%q) error = %v", key, err)
 		}
@@ -87,12 +90,15 @@ func TestSSTableGet_Tombstone(t *testing.T) {
 	}
 	defer reader.Close()
 
-	value, found, err := reader.Get([]byte("b"))
+	value, found, tombstone, err := reader.Get([]byte("b"))
 	if err != nil {
 		t.Fatalf("Get(b) error = %v", err)
 	}
-	if found {
-		t.Fatal("Get(b) found = true, want false")
+	if !found {
+		t.Fatal("Get(b) found = false, want true")
+	}
+	if !tombstone {
+		t.Fatal("Get(b) tombstone = false, want true")
 	}
 	if value != nil {
 		t.Fatalf("Get(b) value = %q, want nil", value)
@@ -111,7 +117,7 @@ func TestSSTableEmpty(t *testing.T) {
 	}
 	defer reader.Close()
 
-	value, found, err := reader.Get([]byte("anything"))
+	value, found, _, err := reader.Get([]byte("anything"))
 	if err != nil {
 		t.Fatalf("Get(anything) error = %v", err)
 	}
@@ -306,34 +312,43 @@ func TestWriteSSTableFromIterator_MemTableRoundTrip(t *testing.T) {
 	}
 	defer reader.Close()
 
-	value, found, err := reader.Get([]byte("a"))
+	value, found, tombstone, err := reader.Get([]byte("a"))
 	if err != nil {
 		t.Fatalf("Get(a) error = %v", err)
 	}
 	if !found {
 		t.Fatal("Get(a) found = false, want true")
 	}
+	if tombstone {
+		t.Fatal("Get(a) tombstone = true, want false")
+	}
 	if !bytes.Equal(value, []byte("1")) {
 		t.Fatalf("Get(a) value = %q, want %q", value, []byte("1"))
 	}
 
-	value, found, err = reader.Get([]byte("b"))
+	value, found, tombstone, err = reader.Get([]byte("b"))
 	if err != nil {
 		t.Fatalf("Get(b) error = %v", err)
 	}
-	if found {
-		t.Fatal("Get(b) found = true, want false")
+	if !found {
+		t.Fatal("Get(b) found = false, want true")
+	}
+	if !tombstone {
+		t.Fatal("Get(b) tombstone = false, want true")
 	}
 	if value != nil {
 		t.Fatalf("Get(b) value = %q, want nil", value)
 	}
 
-	value, found, err = reader.Get([]byte("c"))
+	value, found, tombstone, err = reader.Get([]byte("c"))
 	if err != nil {
 		t.Fatalf("Get(c) error = %v", err)
 	}
 	if !found {
 		t.Fatal("Get(c) found = false, want true")
+	}
+	if tombstone {
+		t.Fatal("Get(c) tombstone = true, want false")
 	}
 	if !bytes.Equal(value, []byte("3")) {
 		t.Fatalf("Get(c) value = %q, want %q", value, []byte("3"))

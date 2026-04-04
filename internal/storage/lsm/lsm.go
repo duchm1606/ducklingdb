@@ -106,11 +106,14 @@ func (e *LSMEngine) Get(key []byte) ([]byte, error) {
 
 	// Search SSTables from newest to oldest.
 	for i := len(e.sstables) - 1; i >= 0; i-- {
-		value, found, err := e.sstables[i].Get(key)
+		value, found, tombstone, err := e.sstables[i].Get(key)
 		if err != nil {
 			return nil, err
 		}
 		if found {
+			if tombstone {
+				return nil, storage.ErrKeyNotFound
+			}
 			return value, nil
 		}
 	}

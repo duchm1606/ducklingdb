@@ -157,6 +157,38 @@ func TestLSMEngine_DeleteAndReopen(t *testing.T) {
 	}
 }
 
+// TestLSMEngine_TombstoneInSSTableShadowsOlderSSTable verifies that a
+// tombstone flushed to an SSTable prevents Get from returning a stale
+// value from an older SSTable.
+func TestLSMEngine_TombstoneInSSTableShadowsOlderSSTable(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	// Use a tiny threshold so each operation triggers a flush.
+	engine, err := OpenLSM(LSMOptions{Dir: dir, MemTableThreshold: 1})
+	if err != nil {
+		t.Fatalf("OpenLSM() error = %v", err)
+	}
+	defer engine.Close()
+
+	// Put "x" → flushes to sst-000000.
+	if err := engine.Put([]byte("x"), []byte("alive")); err != nil {
+		t.Fatalf("Put(x) error = %v", err)
+	}
+
+	// Delete "x" → tombstone flushes to sst-000001.
+	if err := engine.Delete([]byte("x")); err != nil {
+		t.Fatalf("Delete(x) error = %v", err)
+	}
+
+	// The MemTable is now empty (everything flushed).
+	// Get must see the tombstone in sst-000001 and NOT return "alive" from sst-000000.
+	_, err = engine.Get([]byte("x"))
+	if !errors.Is(err, storage.ErrKeyNotFound) {
+		t.Fatalf("Get(x) = %v, want %v", err, storage.ErrKeyNotFound)
+	}
+}
+
 func TestLSMEngine_IteratorMergedView(t *testing.T) {
 	t.Parallel()
 

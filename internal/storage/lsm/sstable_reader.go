@@ -106,7 +106,9 @@ func (r *SSTableReader) readRecordAt(offset int64) (*sstableRecord, error) {
 }
 
 // Get performs a binary search over the record offsets and returns the value for key.
-func (r *SSTableReader) Get(key []byte) ([]byte, bool, error) {
+// Returns (value, found, tombstone, error). When found is true and tombstone is true,
+// the key exists as a deletion marker and must shadow older values.
+func (r *SSTableReader) Get(key []byte) ([]byte, bool, bool, error) {
 	left := 0
 	right := len(r.offsets) - 1
 
@@ -114,15 +116,15 @@ func (r *SSTableReader) Get(key []byte) ([]byte, bool, error) {
 		mid := left + (right-left)/2
 		record, err := r.readRecordAt(r.offsets[mid])
 		if err != nil {
-			return nil, false, err
+			return nil, false, false, err
 		}
 
 		cmp := bytes.Compare(record.key, key)
 		if cmp == 0 {
 			if record.tombstone {
-				return nil, false, nil
+				return nil, true, true, nil
 			}
-			return record.value, true, nil
+			return record.value, true, false, nil
 		}
 
 		if cmp < 0 {
@@ -132,7 +134,7 @@ func (r *SSTableReader) Get(key []byte) ([]byte, bool, error) {
 		}
 	}
 
-	return nil, false, nil
+	return nil, false, false, nil
 }
 
 // SSTableIterator:
