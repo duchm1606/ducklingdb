@@ -65,6 +65,17 @@ func (w *WAL) ReadAll() ([]Entry, error) {
 	}
 }
 
+// WriteAll writes multiple encoded entries to the WAL in a single fsync.
+// This amortizes the sync cost across a batch of writes.
+func (w *WAL) WriteAll(entries []Entry) error {
+	for i := range entries {
+		if _, err := w.fp.Write(entries[i].Encode()); err != nil {
+			return err
+		}
+	}
+	return w.fp.Sync()
+}
+
 // Close closes the WAL file handle.
 func (w *WAL) Close() error {
 	return w.fp.Close()

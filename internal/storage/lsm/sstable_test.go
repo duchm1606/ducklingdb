@@ -285,6 +285,86 @@ func TestSSTableIterator_IncludesTombstones(t *testing.T) {
 	}
 }
 
+func TestWriteSSTableFromIterator_MemTableRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	mem := NewMemTable()
+	mem.Put([]byte("a"), []byte("1"))
+	mem.Put([]byte("b"), []byte("2"))
+	mem.Put([]byte("c"), []byte("3"))
+	mem.Delete([]byte("b"))
+	mem.Freeze()
+
+	path := filepath.Join(t.TempDir(), "flushed.sst")
+	if err := WriteSSTableFromIterator(path, mem.NewIterator()); err != nil {
+		t.Fatalf("WriteSSTableFromIterator() error = %v", err)
+	}
+
+	reader, err := OpenSSTable(path)
+	if err != nil {
+		t.Fatalf("OpenSSTable() error = %v", err)
+	}
+	defer reader.Close()
+
+	value, found, err := reader.Get([]byte("a"))
+	if err != nil {
+		t.Fatalf("Get(a) error = %v", err)
+	}
+	if !found {
+		t.Fatal("Get(a) found = false, want true")
+	}
+	if !bytes.Equal(value, []byte("1")) {
+		t.Fatalf("Get(a) value = %q, want %q", value, []byte("1"))
+	}
+
+	value, found, err = reader.Get([]byte("b"))
+	if err != nil {
+		t.Fatalf("Get(b) error = %v", err)
+	}
+	if found {
+		t.Fatal("Get(b) found = true, want false")
+	}
+	if value != nil {
+		t.Fatalf("Get(b) value = %q, want nil", value)
+	}
+
+	value, found, err = reader.Get([]byte("c"))
+	if err != nil {
+		t.Fatalf("Get(c) error = %v", err)
+	}
+	if !found {
+		t.Fatal("Get(c) found = false, want true")
+	}
+	if !bytes.Equal(value, []byte("3")) {
+		t.Fatalf("Get(c) value = %q, want %q", value, []byte("3"))
+	}
+
+	it := reader.NewIterator()
+	defer it.Close()
+	if !it.Seek([]byte("")) {
+		t.Fatal("Seek(\"\") = false, want true")
+	}
+
+	if got := string(it.Key()); got != "a" {
+		t.Fatalf("first key = %q, want %q", got, "a")
+	}
+	if !it.Next() {
+		t.Fatal("Next() after a = false, want true")
+	}
+	if got := string(it.Key()); got != "b" {
+		t.Fatalf("second key = %q, want %q", got, "b")
+	}
+	if !it.IsTombstone() {
+		t.Fatal("IsTombstone() on b = false, want true")
+	}
+	if !it.Next() {
+		t.Fatal("Next() after b = false, want true")
+	}
+	if got := string(it.Key()); got != "c" {
+		t.Fatalf("third key = %q, want %q", got, "c")
+	}
+}
+
 type sstableTestEntry struct {
 	key       []byte
 	value     []byte

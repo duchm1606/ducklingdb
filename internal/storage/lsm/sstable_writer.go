@@ -4,11 +4,8 @@ import (
 	"encoding/binary"
 	"io"
 	"os"
-)
 
-const (
-	sstableRecordHeaderSize = 9  // klen:4 + vlen:4 + tombstone:1
-	sstableFooterSize       = 16 // record_count:8 + index_offset:8
+	"github.com/duchm1606/ducklingdb/internal/storage"
 )
 
 // SSTableWriter writes a sorted, immutable SSTable file to disk.
@@ -98,6 +95,32 @@ func (w *SSTableWriter) Finish() error {
 	}
 
 	return w.Close()
+}
+
+// WriteSSTableFromIterator:
+// Flush integration should not care whether the sorted source is a MemTable,
+// an immutable MemTable, or some later merged view. This helper turns any
+// ordered iterator into one SSTable file by streaming keys in iterator order.
+// The iterator is expected to already be sorted.
+func WriteSSTableFromIterator(path string, iter storage.Iterator) error {
+	writer, err := NewSSTableWriter(path)
+	if err != nil {
+		return err
+	}
+
+	defer iter.Close()
+
+	if iter.Seek([]byte("")) {
+		for iter.Valid() {
+			if err := writer.Add(iter.Key(), iter.Value(), iter.IsTombstone()); err != nil {
+				_ = writer.Close()
+				return err
+			}
+			iter.Next()
+		}
+	}
+
+	return writer.Finish()
 }
 
 // Close releases the underlying file handle.

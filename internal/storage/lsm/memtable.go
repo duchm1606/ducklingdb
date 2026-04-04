@@ -28,6 +28,14 @@ type MemTable struct {
 	frozen bool
 }
 
+// MemTableFreeze:
+// Flush integration depends on a simple but critical invariant: once a MemTable
+// is handed off for SSTable creation, it must stop changing. Freeze marks the
+// table immutable so the engine can safely iterate and flush a stable snapshot
+// while newer writes move to a different active MemTable.
+//
+// A frozen MemTable is still readable. It simply stops accepting mutations.
+
 // The head node should have maxMemTableLevel levels, even when the MemTable is empty. That gives you a fixed top anchor for future searches.
 // The MemTable’s current level should start at 1, not 0. Even an empty skip list has a bottom level.
 func NewMemTable() *MemTable {
@@ -152,6 +160,10 @@ func (m *MemTable) insertNode(node *memNode, update []*memNode) {
 // - tombstone contributes roughly `len(key)`
 // That is why converting tombstone → live value needs extra size adjustment.
 func (m *MemTable) Put(key, value []byte) {
+	if m.frozen {
+		panic("lsm: Put on frozen MemTable")
+	}
+
 	update, found := m.findPath(key)
 	if found != nil {
 		oldValueLen := len(found.value)
@@ -190,6 +202,10 @@ func (m *MemTable) Get(key []byte) ([]byte, bool, bool) {
 // - if the key exists, turn it into a tombstone
 // - if the key does not exist, insert a tombstone anyway
 func (m *MemTable) Delete(key []byte) {
+	if m.frozen {
+		panic("lsm: Delete on frozen MemTable")
+	}
+
 	update, found := m.findPath(key)
 	if found != nil {
 		if found.tombstone {
@@ -205,6 +221,26 @@ func (m *MemTable) Delete(key []byte) {
 	node := newMemNode(randomLevel(), key, nil, true)
 	m.insertNode(node, update)
 	m.size += len(key)
+}
+
+// applyEntriesToMemTable replays a slice of entries into a MemTable.
+func applyEntriesToMemTable(mem *MemTable, entries []Entry) {
+	for _, entry := range entries {
+		switch entry.Op {
+		case OpPut:
+			mem.Put(entry.Key, entry.Value)
+		case OpDelete:
+			mem.Delete(entry.Key)
+		}
+	}
+}
+
+func (m *MemTable) Freeze() {
+	m.frozen = true
+}
+
+func (m *MemTable) IsFrozen() bool {
+	return m.frozen
 }
 
 func (m *MemTable) Size() int {

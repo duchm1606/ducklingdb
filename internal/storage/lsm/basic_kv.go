@@ -54,17 +54,7 @@ func replayWALIntoMemTable(wal *WAL, mem *MemTable) error {
 		return fmt.Errorf("read WAL: %w", err)
 	}
 
-	for _, entry := range entries {
-		switch entry.Op {
-		case OpPut:
-			mem.Put(entry.Key, entry.Value)
-		case OpDelete:
-			mem.Delete(entry.Key)
-		default:
-			return fmt.Errorf("replay WAL: unknown op %d", entry.Op)
-		}
-	}
-
+	applyEntriesToMemTable(mem, entries)
 	return nil
 }
 
@@ -108,70 +98,30 @@ func (kv *BasicKV) Delete(key []byte) error {
 }
 
 // NewIterator returns an iterator over live keys only.
-// Tombstones are filtered out from the underlying MemTable iterator.
+// Tombstones are filtered out via DeletedFilterIterator.
 func (kv *BasicKV) NewIterator() (storage.Iterator, error) {
 	kv.mu.RLock()
 	inner := kv.mem.NewIterator()
-	return &noTombstoneIterator{inner: inner, mu: &kv.mu}, nil
+	return &lockingIterator{
+		inner: NewDeletedFilterIterator(inner),
+		mu:    &kv.mu,
+	}, nil
 }
 
-type noTombstoneIterator struct {
-	inner *MemTableIterator
+// lockingIterator wraps an iterator and releases a read lock on Close.
+type lockingIterator struct {
+	inner storage.Iterator
 	mu    *sync.RWMutex
 }
 
-func (it *noTombstoneIterator) Seek(key []byte) bool {
-	if !it.inner.Seek(key) {
-		return false
-	}
-
-	for it.inner.Valid() && it.inner.IsTombstone() {
-		it.inner.Next()
-	}
-
-	return it.inner.Valid()
-}
-
-func (it *noTombstoneIterator) Next() bool {
-	for it.inner.Next() {
-		if !it.inner.IsTombstone() {
-			return true
-		}
-	}
-
-	return false
-}
-
-func (it *noTombstoneIterator) Prev() bool {
-	for it.inner.Prev() {
-		if !it.inner.IsTombstone() {
-			return true
-		}
-	}
-
-	return false
-}
-
-func (it *noTombstoneIterator) Valid() bool {
-	return it.inner.Valid()
-}
-
-func (it *noTombstoneIterator) Key() []byte {
-	return it.inner.Key()
-}
-
-func (it *noTombstoneIterator) Value() []byte {
-	return it.inner.Value()
-}
-
-func (it *noTombstoneIterator) IsTombstone() bool {
-	return false
-}
-
-func (it *noTombstoneIterator) Close() {
-	it.inner.Close()
-	it.mu.RUnlock()
-}
+func (it *lockingIterator) Seek(key []byte) bool  { return it.inner.Seek(key) }
+func (it *lockingIterator) Next() bool             { return it.inner.Next() }
+func (it *lockingIterator) Prev() bool             { return it.inner.Prev() }
+func (it *lockingIterator) Valid() bool             { return it.inner.Valid() }
+func (it *lockingIterator) Key() []byte             { return it.inner.Key() }
+func (it *lockingIterator) Value() []byte           { return it.inner.Value() }
+func (it *lockingIterator) IsTombstone() bool       { return it.inner.IsTombstone() }
+func (it *lockingIterator) Close()                  { it.inner.Close(); it.mu.RUnlock() }
 
 // NewBatch creates a write batch that amortizes the WAL fsync cost.
 func (kv *BasicKV) NewBatch() storage.Batch {
@@ -202,25 +152,11 @@ func (b *basicBatch) Commit() error {
 	b.kv.mu.Lock()
 	defer b.kv.mu.Unlock()
 
-	for _, entry := range b.entries {
-		if _, err := b.kv.wal.fp.Write(entry.Encode()); err != nil {
-			return fmt.Errorf("batch WAL write: %w", err)
-		}
+	if err := b.kv.wal.WriteAll(b.entries); err != nil {
+		return fmt.Errorf("batch WAL write: %w", err)
 	}
 
-	if err := b.kv.wal.fp.Sync(); err != nil {
-		return fmt.Errorf("batch WAL sync: %w", err)
-	}
-
-	for _, entry := range b.entries {
-		switch entry.Op {
-		case OpPut:
-			b.kv.mem.Put(entry.Key, entry.Value)
-		case OpDelete:
-			b.kv.mem.Delete(entry.Key)
-		}
-	}
-
+	applyEntriesToMemTable(b.kv.mem, b.entries)
 	return nil
 }
 
