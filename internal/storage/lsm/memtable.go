@@ -121,26 +121,34 @@ func (m *MemTable) findPath(key []byte) ([]*memNode, *memNode) {
 // Those matter later for iteration and reverse iteration.
 func (m *MemTable) insertNode(node *memNode, update []*memNode) {
 	nodeLevel := len(node.levels)
+	// Extend the active height if needed
 	if nodeLevel > m.level {
 		for level := m.level; level < nodeLevel; level++ {
 			update[level] = m.head
 		}
 		m.level = nodeLevel
 	}
+	// Wire forward pointer
 	for level := 0; level < nodeLevel; level++ {
+		// node.forward = predecessor.forward (at `level-th` level)
 		node.levels[level].forward = update[level].levels[level].forward
+		// predecessor.forward = node (at `level-th` level)
 		update[level].levels[level].forward = node
 	}
+	// Wire backward pointer
+	// backward only exists at level 0. If the predecessor is head (sentinel), we set backward = nil because there's no real previous node. Otherwise, backward points to the predecessor.
 	if update[0] == m.head {
-		node.backward = nil
+		node.backward = nil // node is the new first element
 	} else {
-		node.backward = update[0]
+		node.backward = update[0] // point back to level-0 predecessor
 	}
+	// Fix successor's backward pointer
 	if node.levels[0].forward != nil {
-		node.levels[0].forward.backward = node
+		node.levels[0].forward.backward = node // old successor points back to us
 	} else {
-		m.tail = node
+		m.tail = node // we're the new rightmost node.
 	}
+	// Edge case for first insertion
 	if m.tail == nil {
 		m.tail = node
 	}
@@ -250,6 +258,8 @@ func (m *MemTable) Len() int {
 	return m.length
 }
 
+// MemTableIterator:
+// The iterator is simple because all the hard work was done during insertion — the level-0 forward and backward pointers form a sorted doubly-linked list.
 type MemTableIterator struct {
 	curr *memNode
 	mem  *MemTable
