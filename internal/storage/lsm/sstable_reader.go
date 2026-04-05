@@ -13,6 +13,7 @@ type SSTableReader struct {
 	fp      *os.File
 	path    string
 	offsets []int64
+	bloom   *BloomFilter
 	count   int
 }
 
@@ -22,7 +23,8 @@ type sstableRecord struct {
 	tombstone bool
 }
 
-// OpenSSTable opens an SSTable, reads the footer, and loads the offset index.
+// OpenSSTable opens an SSTable, reads the footer, loads the offset index,
+// and loads the bloom filter.
 func OpenSSTable(path string) (*SSTableReader, error) {
 	fp, err := os.Open(path)
 	if err != nil {
@@ -39,6 +41,7 @@ func OpenSSTable(path string) (*SSTableReader, error) {
 		return nil, fmt.Errorf("sstable too small: %d bytes", info.Size())
 	}
 
+	// Read footer.
 	footer := make([]byte, sstableFooterSize)
 	footerOffset := info.Size() - sstableFooterSize
 	if _, err := fp.ReadAt(footer, footerOffset); err != nil {
@@ -48,7 +51,10 @@ func OpenSSTable(path string) (*SSTableReader, error) {
 
 	recordCount := binary.LittleEndian.Uint64(footer[0:8])
 	indexOffset := binary.LittleEndian.Uint64(footer[8:16])
+	bloomOffset := binary.LittleEndian.Uint64(footer[16:24])
+	bloomSize := binary.LittleEndian.Uint64(footer[24:32])
 
+	// Load offset index.
 	offsets := make([]int64, recordCount)
 	if recordCount > 0 {
 		if _, err := fp.Seek(int64(indexOffset), io.SeekStart); err != nil {
@@ -66,10 +72,22 @@ func OpenSSTable(path string) (*SSTableReader, error) {
 		}
 	}
 
+	// Load bloom filter.
+	var bloom *BloomFilter
+	if bloomSize > 0 {
+		bloomData := make([]byte, bloomSize)
+		if _, err := fp.ReadAt(bloomData, int64(bloomOffset)); err != nil {
+			_ = fp.Close()
+			return nil, fmt.Errorf("read bloom filter: %w", err)
+		}
+		bloom = DecodeBloomFilter(bloomData)
+	}
+
 	return &SSTableReader{
 		fp:      fp,
 		path:    path,
 		offsets: offsets,
+		bloom:   bloom,
 		count:   int(recordCount),
 	}, nil
 }
@@ -108,7 +126,14 @@ func (r *SSTableReader) readRecordAt(offset int64) (*sstableRecord, error) {
 // Get performs a binary search over the record offsets and returns the value for key.
 // Returns (value, found, tombstone, error). When found is true and tombstone is true,
 // the key exists as a deletion marker and must shadow older values.
+//
+// If the SSTable has a bloom filter, it is checked first. A "definitely not"
+// result skips the binary search entirely.
 func (r *SSTableReader) Get(key []byte) ([]byte, bool, bool, error) {
+	if r.bloom != nil && !r.bloom.MayContain(key) {
+		return nil, false, false, nil
+	}
+
 	left := 0
 	right := len(r.offsets) - 1
 
@@ -141,10 +166,10 @@ func (r *SSTableReader) Get(key []byte) ([]byte, bool, bool, error) {
 // The SSTable does not keep all keys in memory. Instead, the file itself is the
 // sorted structure, and `offsets[i]` tells us where the i-th sorted record lives
 // on disk. That is enough for two important operations:
-//   1. Binary search: probe offsets[mid], read that record's key, compare, then
-//      move left or right.
-//   2. Iteration: keep a current index into `offsets`, read the record at that
-//      position, and move forward/backward by changing the index.
+//  1. Binary search: probe offsets[mid], read that record's key, compare, then
+//     move left or right.
+//  2. Iteration: keep a current index into `offsets`, read the record at that
+//     position, and move forward/backward by changing the index.
 //
 // We need this iterator because SSTables are not only used for point lookups.
 // They are also inputs to range scans, merge iteration, and later compaction.
