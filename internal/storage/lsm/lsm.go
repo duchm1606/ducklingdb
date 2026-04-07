@@ -21,22 +21,30 @@ var _ storage.Engine = (*LSMEngine)(nil)
 type LSMOptions struct {
 	Dir               string
 	MemTableThreshold int
+	L0Threshold       int
+	GrowthFactor      float64
 }
 
-// LSMEngine:
-// This is the first integrated Phase B engine shape: active WAL + active
-// MemTable + persisted SSTables. Fresh writes land in the WAL and MemTable,
-// while older frozen MemTable contents are flushed into immutable SSTables.
-// Reads merge the active MemTable with SSTables so the engine presents one
-// logical keyspace even though data now spans memory and disk.
+// LSMEngine is the complete LSM storage engine.
+//
+// Write path: WAL append → MemTable insert → if threshold exceeded, freeze
+// MemTable, flush to a new L0 SSTable via the Compactor, truncate WAL, then
+// trigger compaction to merge levels as needed.
+//
+// Read path: active MemTable → L0 SSTables (newest first) → L1, L2, … with
+// tombstone filtering applied at the iterator layer for scans.
+//
+// Crash safety: every metadata change goes through the dual-slot MetaStore.
+// A crash at any point leaves the engine in a consistent state.
 type LSMEngine struct {
 	mu                sync.RWMutex
 	dir               string
 	wal               *WAL
 	mem               *MemTable
-	sstables          []*SSTableReader // newest first
+	levels            [][]*SSTableReader // levels[i][j] = j-th SSTable at level i; L0[0] is newest
 	memTableThreshold int
-	nextSSTableID     uint64
+	meta              *MetaStore
+	compactor         *Compactor
 }
 
 func OpenLSM(opts LSMOptions) (*LSMEngine, error) {
@@ -51,32 +59,49 @@ func OpenLSM(opts LSMOptions) (*LSMEngine, error) {
 		return nil, fmt.Errorf("create dir: %w", err)
 	}
 
-	sstables, nextID, err := loadSSTables(opts.Dir)
+	meta := NewMetaStore(opts.Dir)
+
+	// Derive the next SSTable ID by scanning the directory for existing files.
+	// This is intentionally directory-based, not metadata-based, so that
+	// orphaned files from crashed compactions are never overwritten.
+	nextID, err := scanDirForNextID(opts.Dir)
 	if err != nil {
+		return nil, err
+	}
+
+	compactor := NewCompactor(opts.Dir, meta, nextID, CompactionOptions{
+		L0Threshold:  opts.L0Threshold,
+		GrowthFactor: opts.GrowthFactor,
+	})
+
+	engine := &LSMEngine{
+		dir:               opts.Dir,
+		memTableThreshold: opts.MemTableThreshold,
+		meta:              meta,
+		compactor:         compactor,
+	}
+
+	// Load SSTables from metadata (not glob — metadata is the source of truth).
+	if err := engine.reloadLevels(); err != nil {
 		return nil, err
 	}
 
 	wal, err := OpenWAL(filepath.Join(opts.Dir, lsmWALName))
 	if err != nil {
-		closeSSTables(sstables)
+		engine.closeAllReaders()
 		return nil, fmt.Errorf("open WAL: %w", err)
 	}
+	engine.wal = wal
 
 	mem := NewMemTable()
 	if err := replayWALIntoMemTable(wal, mem); err != nil {
 		_ = wal.Close()
-		closeSSTables(sstables)
+		engine.closeAllReaders()
 		return nil, err
 	}
+	engine.mem = mem
 
-	return &LSMEngine{
-		dir:               opts.Dir,
-		wal:               wal,
-		mem:               mem,
-		sstables:          sstables,
-		memTableThreshold: opts.MemTableThreshold,
-		nextSSTableID:     nextID,
-	}, nil
+	return engine, nil
 }
 
 func (e *LSMEngine) Put(key, value []byte) error {
@@ -95,26 +120,44 @@ func (e *LSMEngine) Get(key []byte) ([]byte, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	// Check the active MemTable first (newest data).
-	value, found, tombstone := e.mem.Get(key)
-	if found {
+	// Active MemTable first — always the freshest source.
+	if value, found, tombstone := e.mem.Get(key); found {
 		if tombstone {
 			return nil, storage.ErrKeyNotFound
 		}
 		return value, nil
 	}
 
-	// Search SSTables from newest to oldest.
-	for i := len(e.sstables) - 1; i >= 0; i-- {
-		value, found, tombstone, err := e.sstables[i].Get(key)
-		if err != nil {
-			return nil, err
-		}
-		if found {
-			if tombstone {
-				return nil, storage.ErrKeyNotFound
+	// L0 SSTables newest-first (levels[0][0] is the most recently flushed).
+	// L0 files can overlap, so we must check every one.
+	if len(e.levels) > 0 {
+		for _, r := range e.levels[0] {
+			value, found, tombstone, err := r.Get(key)
+			if err != nil {
+				return nil, err
 			}
-			return value, nil
+			if found {
+				if tombstone {
+					return nil, storage.ErrKeyNotFound
+				}
+				return value, nil
+			}
+		}
+	}
+
+	// L1, L2, … — non-overlapping within each level; linear scan is correct.
+	for _, level := range e.levelSlice(1) {
+		for _, r := range level {
+			value, found, tombstone, err := r.Get(key)
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				if tombstone {
+					return nil, storage.ErrKeyNotFound
+				}
+				return value, nil
+			}
 		}
 	}
 
@@ -153,25 +196,14 @@ func (e *LSMEngine) Close() error {
 	}
 
 	var closeErr error
-	for _, sstable := range e.sstables {
-		if err := sstable.Close(); err != nil && closeErr == nil {
-			closeErr = err
-		}
-	}
-	if err := e.wal.Close(); err != nil && closeErr == nil {
+	e.closeAllReaders()
+	if err := e.wal.Close(); err != nil {
 		closeErr = err
 	}
 	return closeErr
 }
 
-func (e *LSMEngine) newMergedIteratorLocked() (storage.Iterator, error) {
-	iterators := make([]storage.Iterator, 0, 1+len(e.sstables))
-	iterators = append(iterators, e.mem.NewIterator())
-	for i := len(e.sstables) - 1; i >= 0; i-- {
-		iterators = append(iterators, e.sstables[i].NewIterator())
-	}
-	return NewDeletedFilterIterator(NewMergeIterator(iterators)), nil
-}
+// --- internal helpers --------------------------------------------------------
 
 func (e *LSMEngine) maybeFlushLocked() error {
 	if e.mem.Size() < e.memTableThreshold {
@@ -186,61 +218,139 @@ func (e *LSMEngine) flushActiveMemTableLocked() error {
 	}
 
 	e.mem.Freeze()
-	path := filepath.Join(e.dir, sstableFilename(e.nextSSTableID))
-	if err := WriteSSTableFromIterator(path, e.mem.NewIterator()); err != nil {
-		return fmt.Errorf("flush memtable to sstable: %w", err)
+
+	// Step 1: write SSTable + update metadata (crash-safe via MetaStore).
+	if err := e.compactor.FlushMemTable(e.mem); err != nil {
+		return fmt.Errorf("flush memtable: %w", err)
 	}
 
-	sstable, err := OpenSSTable(path)
-	if err != nil {
-		return fmt.Errorf("open flushed sstable: %w", err)
-	}
-
-	e.sstables = append(e.sstables, sstable)
-	e.nextSSTableID++
+	// Step 2: activate the new MemTable and clear the WAL.
 	e.mem = NewMemTable()
 	if err := e.wal.Truncate(); err != nil {
-		return fmt.Errorf("truncate WAL after flush: %w", err)
+		return fmt.Errorf("truncate WAL: %w", err)
 	}
 
+	// Step 3: reload so Get sees the new L0 SSTable.
+	if err := e.reloadLevels(); err != nil {
+		return err
+	}
+
+	// Step 4: compact if any level is over threshold, then sync readers again.
+	if err := e.compactor.MaybeTriggerCompaction(); err != nil {
+		return fmt.Errorf("compaction: %w", err)
+	}
+
+	return e.reloadLevels()
+}
+
+// reloadLevels closes all existing SSTableReaders and reopens them from the
+// current MetaStore snapshot.  Called after every flush or compaction cycle.
+func (e *LSMEngine) reloadLevels() error {
+	e.closeAllReaders()
+
+	meta, err := e.meta.Load()
+	if err != nil {
+		return fmt.Errorf("load metadata: %w", err)
+	}
+
+	e.levels = make([][]*SSTableReader, len(meta.Levels))
+	for i, files := range meta.Levels {
+		e.levels[i] = make([]*SSTableReader, len(files))
+		for j, name := range files {
+			r, err := OpenSSTable(filepath.Join(e.dir, name))
+			if err != nil {
+				// close everything we opened so far before returning
+				for k := 0; k < j; k++ {
+					_ = e.levels[i][k].Close()
+				}
+				for k := 0; k < i; k++ {
+					for _, r := range e.levels[k] {
+						_ = r.Close()
+					}
+				}
+				return fmt.Errorf("open %q: %w", name, err)
+			}
+			e.levels[i][j] = r
+		}
+	}
 	return nil
 }
 
-func loadSSTables(dir string) ([]*SSTableReader, uint64, error) {
-	paths, err := filepath.Glob(filepath.Join(dir, sstablePattern))
-	if err != nil {
-		return nil, 0, fmt.Errorf("glob sstables: %w", err)
-	}
-	sort.Strings(paths)
-
-	sstables := make([]*SSTableReader, 0, len(paths))
-	var nextID uint64
-	for _, path := range paths {
-		sstable, err := OpenSSTable(path)
-		if err != nil {
-			closeSSTables(sstables)
-			return nil, 0, fmt.Errorf("open sstable %q: %w", path, err)
-		}
-		sstables = append(sstables, sstable)
-
-		var id uint64
-		if _, err := fmt.Sscanf(filepath.Base(path), "sst-%06d.sst", &id); err == nil && id >= nextID {
-			nextID = id + 1
+func (e *LSMEngine) closeAllReaders() {
+	for _, level := range e.levels {
+		for _, r := range level {
+			_ = r.Close()
 		}
 	}
-
-	return sstables, nextID, nil
+	e.levels = nil
 }
 
-func closeSSTables(sstables []*SSTableReader) {
-	for _, sstable := range sstables {
-		_ = sstable.Close()
+// newMergedIteratorLocked builds a merge iterator with priority order:
+// MemTable (freshest) → L0 newest→oldest → L1 → L2 → …
+// Lower index in the iterator slice = higher priority on key collision.
+func (e *LSMEngine) newMergedIteratorLocked() (storage.Iterator, error) {
+	iters := make([]storage.Iterator, 0, 1+e.totalSSTableCount())
+	iters = append(iters, e.mem.NewIterator())
+
+	// L0 newest-first.
+	if len(e.levels) > 0 {
+		for _, r := range e.levels[0] {
+			iters = append(iters, r.NewIterator())
+		}
 	}
+	// L1 and below.
+	for _, level := range e.levelSlice(1) {
+		for _, r := range level {
+			iters = append(iters, r.NewIterator())
+		}
+	}
+
+	return NewDeletedFilterIterator(NewMergeIterator(iters)), nil
+}
+
+// levelSlice returns e.levels[from:] safely (returns nil if from >= len).
+func (e *LSMEngine) levelSlice(from int) [][]*SSTableReader {
+	if from >= len(e.levels) {
+		return nil
+	}
+	return e.levels[from:]
+}
+
+func (e *LSMEngine) totalSSTableCount() int {
+	n := 0
+	for _, level := range e.levels {
+		n += len(level)
+	}
+	return n
 }
 
 func sstableFilename(id uint64) string {
 	return fmt.Sprintf("sst-%06d.sst", id)
 }
+
+// scanDirForNextID scans the directory for existing SSTable files and returns
+// max(id)+1, ensuring new files never collide with any on-disk file (including
+// orphans from crashed compactions that are absent from metadata).
+func scanDirForNextID(dir string) (uint64, error) {
+	paths, err := filepath.Glob(filepath.Join(dir, sstablePattern))
+	if err != nil {
+		return 0, fmt.Errorf("glob sstables: %w", err)
+	}
+	sort.Strings(paths)
+
+	var nextID uint64
+	for _, path := range paths {
+		var id uint64
+		if _, err := fmt.Sscanf(filepath.Base(path), "sst-%06d.sst", &id); err == nil {
+			if id+1 > nextID {
+				nextID = id + 1
+			}
+		}
+	}
+	return nextID, nil
+}
+
+// --- batch -------------------------------------------------------------------
 
 type lsmBatch struct {
 	engine  *LSMEngine

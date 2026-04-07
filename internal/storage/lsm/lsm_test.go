@@ -239,3 +239,123 @@ func TestLSMEngine_IteratorMergedView(t *testing.T) {
 		}
 	}
 }
+
+func TestLSMEngine_CompactionTriggered_DataStillReadable(t *testing.T) {
+	t.Parallel()
+
+	// L0Threshold=2 so compaction fires after every 2 flushes.
+	engine, err := OpenLSM(LSMOptions{
+		Dir:               t.TempDir(),
+		MemTableThreshold: 1, // flush every write
+		L0Threshold:       2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+
+	// Write 10 keys — each write flushes, so 10 L0 SSTables are created,
+	// which triggers several rounds of compaction.
+	for i := range 10 {
+		key := []byte{byte(i)}
+		if err := engine.Put(key, key); err != nil {
+			t.Fatalf("Put(%d): %v", i, err)
+		}
+	}
+
+	// All keys must still be readable after compaction.
+	for i := range 10 {
+		key := []byte{byte(i)}
+		got, err := engine.Get(key)
+		if err != nil {
+			t.Fatalf("Get(%d): %v", i, err)
+		}
+		if got[0] != key[0] {
+			t.Fatalf("Get(%d) = %d, want %d", i, got[0], key[0])
+		}
+	}
+}
+
+func TestLSMEngine_CompactionStrips_DeletedKeys(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	engine, err := OpenLSM(LSMOptions{
+		Dir:               dir,
+		MemTableThreshold: 1,
+		L0Threshold:       2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Write then delete keys — triggers multiple flushes and compactions.
+	for i := range 5 {
+		key := []byte{byte(i)}
+		if err := engine.Put(key, key); err != nil {
+			t.Fatalf("Put(%d): %v", i, err)
+		}
+		if err := engine.Delete(key); err != nil {
+			t.Fatalf("Delete(%d): %v", i, err)
+		}
+	}
+
+	if err := engine.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen — all keys must be absent.
+	engine2, err := OpenLSM(LSMOptions{Dir: dir, MemTableThreshold: 1, L0Threshold: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine2.Close()
+
+	for i := range 5 {
+		key := []byte{byte(i)}
+		_, err := engine2.Get(key)
+		if !errors.Is(err, storage.ErrKeyNotFound) {
+			t.Fatalf("Get(%d) after compact+reopen = %v, want ErrKeyNotFound", i, err)
+		}
+	}
+}
+
+func TestLSMEngine_MetadataReopen_LoadsCorrectSSTables(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	engine, err := OpenLSM(LSMOptions{Dir: dir, MemTableThreshold: 32, L0Threshold: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Write enough to trigger multiple flushes.
+	for i := range 50 {
+		key := []byte{byte(i)}
+		if err := engine.Put(key, []byte{byte(255 - i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen using metadata (not glob).
+	engine2, err := OpenLSM(LSMOptions{Dir: dir, MemTableThreshold: 32, L0Threshold: 4})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer engine2.Close()
+
+	for i := range 50 {
+		key := []byte{byte(i)}
+		want := []byte{byte(255 - i)}
+		got, err := engine2.Get(key)
+		if err != nil {
+			t.Fatalf("Get(%d) after reopen: %v", i, err)
+		}
+		if got[0] != want[0] {
+			t.Fatalf("Get(%d) = %d, want %d", i, got[0], want[0])
+		}
+	}
+}
