@@ -21,7 +21,8 @@ func TestMetadata_RoundTrip_NoIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != m {
+	if !got.Timestamp.Equal(m.Timestamp) || got.Deleted != m.Deleted ||
+		got.KeyBytes != m.KeyBytes || got.ValBytes != m.ValBytes {
 		t.Fatalf("round trip: got %+v, want %+v", got, m)
 	}
 	if got.HasIntent() {

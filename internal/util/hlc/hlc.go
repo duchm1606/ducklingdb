@@ -74,55 +74,44 @@ func (c *Clock) Update(remote Timestamp) Timestamp {
 
 	physical := c.wall.Now()
 
-	// Pick the latest of three candidates.
+	// Pick the WallTime from the maximum of three candidates, then set
+	// Logical to advance past both local state and remote.
 	var next Timestamp
 	switch {
-	case physical >= c.state.WallTime && physical >= remote.WallTime:
+	case physical > c.state.WallTime && physical > remote.WallTime:
+		// Physical wall strictly ahead of everything — reset logical.
 		next = Timestamp{WallTime: physical, Logical: 0}
-	case c.state.WallTime >= remote.WallTime:
+	case c.state.WallTime > remote.WallTime && c.state.WallTime > physical:
+		// Local state is strictly ahead.
 		next = Timestamp{WallTime: c.state.WallTime, Logical: c.state.Logical + 1}
-	default:
+	case remote.WallTime > c.state.WallTime && remote.WallTime > physical:
+		// Remote is strictly ahead.
 		next = Timestamp{WallTime: remote.WallTime, Logical: remote.Logical + 1}
+	default:
+		// Two or more candidates share the maximum WallTime.
+		// Pick that WallTime and set Logical past the highest among them.
+		maxWall := physical
+		if c.state.WallTime > maxWall {
+			maxWall = c.state.WallTime
+		}
+		if remote.WallTime > maxWall {
+			maxWall = remote.WallTime
+		}
+		maxLogical := int32(0)
+		if c.state.WallTime == maxWall && c.state.Logical > maxLogical {
+			maxLogical = c.state.Logical
+		}
+		if remote.WallTime == maxWall && remote.Logical > maxLogical {
+			maxLogical = remote.Logical
+		}
+		next = Timestamp{WallTime: maxWall, Logical: maxLogical + 1}
 	}
 
-	// Guard against degenerate cases where logical ends up ≤ current.
+	// Safety net: next must always exceed local state.
 	if !c.state.Less(next) {
 		next = c.state.Next()
 	}
 
 	c.state = next
 	return c.state
-}
-
-// ManualClock is a controllable wall-clock source for tests.
-// It is safe for concurrent use.
-type ManualClock struct {
-	mu    sync.Mutex
-	nanos int64
-}
-
-// NewManualClock creates a ManualClock initialized to nanos.
-func NewManualClock(nanos int64) *ManualClock {
-	return &ManualClock{nanos: nanos}
-}
-
-// Now returns the current manual time.
-func (m *ManualClock) Now() int64 {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.nanos
-}
-
-// Set replaces the current manual time.
-func (m *ManualClock) Set(nanos int64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.nanos = nanos
-}
-
-// Increment advances the manual time by delta nanoseconds.
-func (m *ManualClock) Increment(delta int64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.nanos += delta
 }

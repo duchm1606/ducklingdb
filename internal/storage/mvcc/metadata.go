@@ -39,6 +39,12 @@ type MVCCMetadata struct {
 	TxnTimestamp hlc.Timestamp `json:"txn_ts,omitempty"`
 	KeyBytes     int64         `json:"kb,omitempty"`
 	ValBytes     int64         `json:"vb,omitempty"`
+	InlineValue  []byte        `json:"inline,omitempty"`
+}
+
+// IsInline reports whether m holds an inline (unversioned) value.
+func (m *MVCCMetadata) IsInline() bool {
+	return m.InlineValue != nil
 }
 
 // HasIntent reports whether m describes an outstanding write intent.
