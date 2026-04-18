@@ -113,8 +113,9 @@ func TestPush_ReaderPushesPendingBlocker(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// Blocker begins early with a low WriteTimestamp.
-	blocker, err := Begin(engine, clock, nil, SSI)
+	// Blocker is SI — safe to push freely (SI blocker accepts a pushed
+	// commit). Step 7 adds priority-based arbitration for SSI blockers.
+	blocker, err := Begin(engine, clock, nil, SI)
 	if err != nil {
 		t.Fatalf("Begin blocker: %v", err)
 	}

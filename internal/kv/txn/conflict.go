@@ -152,18 +152,25 @@ func (tc *TxnCoordSender) bumpWriteTimestampTo(ts hlc.Timestamp) {
 }
 
 // handleReadIntent is the read-side counterpart to resolveForeignIntent.
-// When a read encounters an intent from another transaction, we have three
-// outcomes:
+// When a read encounters an intent from another transaction, four outcomes
+// are possible:
 //
 //   - Blocker COMMITTED: finalize its intent as committed, retry the read.
 //   - Blocker ABORTED / missing: finalize as aborted, retry.
-//   - Blocker PENDING: push the blocker's WriteTimestamp and intent timestamp
-//     past our ReadTimestamp so the intent becomes "in the future" for us.
-//     Retry. The blocker continues running; it will commit at the pushed
-//     timestamp (SSI may later force it to restart — that's Step 7).
+//   - Blocker PENDING, push is safe for them: push the blocker's
+//     WriteTimestamp and intent timestamp past our ReadTimestamp so the
+//     intent is "in the future" for us. The blocker commits at the pushed
+//     timestamp (SI), or if the push doesn't cross their ReadTimestamp, no
+//     restart is triggered either way.
+//   - Blocker PENDING, push would force an SSI restart: priority fight.
+//     Higher-priority side wins — the reader either aborts the blocker and
+//     pushes, or restarts itself with a bumped priority suggestion.
 //
-// We never block the reader. Each resolution either removes the obstacle or
-// moves it out of our way.
+// The last case is what distinguishes SSI from SI for reads. Under SI, any
+// blocker is happy to be pushed. Under SSI, a pushed writer whose
+// WriteTimestamp moves past its ReadTimestamp must restart — so a reader
+// pushing an SSI writer effectively aborts them. Priority arbitration
+// prevents arbitrary readers from killing long-running SSI writers.
 func (tc *TxnCoordSender) handleReadIntent(intentErr *mvcc.WriteIntentError) (retry bool, err error) {
 	blocker, found, err := LoadTxnRecord(tc.engine, intentErr.TxnID)
 	if err != nil {
@@ -176,10 +183,34 @@ func (tc *TxnCoordSender) handleReadIntent(intentErr *mvcc.WriteIntentError) (re
 		return true, tc.finalizeForeignIntent(intentErr, mvcc.TxnCommitted, blocker.WriteTimestamp)
 	}
 
-	// PENDING: push the blocker past our read timestamp. The push must land
-	// strictly above tc.txn.ReadTimestamp so the next MVCCGet's visibility
-	// check (intent.TxnTimestamp.LessEq(readTS)) returns false.
+	// PENDING. Compute where we'd need to push them.
 	pushTo := tc.txn.ReadTimestamp.Next()
+
+	// Would pushing to this timestamp force the blocker to restart under SSI?
+	// Only true when (a) they are SSI, and (b) the push moves their
+	// WriteTimestamp past their ReadTimestamp.
+	pushWouldForceRestart := blocker.Isolation == SSI &&
+		blocker.ReadTimestamp.Less(pushTo)
+
+	if pushWouldForceRestart {
+		// Priority fight, reader vs. SSI writer.
+		if tc.txn.Priority > blocker.Priority {
+			if err := tc.abortBlocker(blocker); err != nil {
+				return false, err
+			}
+			return true, tc.finalizeForeignIntent(intentErr, mvcc.TxnAborted, hlc.Timestamp{})
+		}
+		// We lose. Return a retry error so the caller restarts us with a
+		// priority high enough to beat the blocker next time.
+		return false, &TxnRetryError{
+			TxnID:           tc.txn.ID,
+			Reason:          fmt.Sprintf("read-write conflict with SSI txn %x (priority %d ≤ %d)", intentErr.TxnID[:4], tc.txn.Priority, blocker.Priority),
+			SuggestedMinPri: blocker.Priority + 1,
+		}
+	}
+
+	// Safe push: either the blocker is SI (pushed commit is fine) or the
+	// push doesn't cross their ReadTimestamp (no SSI restart triggered).
 	if blocker.WriteTimestamp.Less(pushTo) {
 		blocker.WriteTimestamp = pushTo
 		blocker.LastHeartbeat = tc.clock.Now()
@@ -187,14 +218,10 @@ func (tc *TxnCoordSender) handleReadIntent(intentErr *mvcc.WriteIntentError) (re
 		if encErr != nil {
 			return false, fmt.Errorf("txn: encode pushed blocker: %w", encErr)
 		}
-		// Persist the bumped record.
 		if err := mvcc.MVCCPut(tc.engine, TxnRecordKey(blocker.ID), hlc.Timestamp{}, data, nil); err != nil {
 			return false, fmt.Errorf("txn: persist pushed blocker record: %w", err)
 		}
 	}
-	// Push the physical intent to match. After this the next MVCCGet sees the
-	// intent above our ReadTimestamp and falls through to the prior committed
-	// version.
 	if err := mvcc.MVCCPushIntent(tc.engine, intentErr.Key, intentErr.TxnID, pushTo); err != nil {
 		return false, fmt.Errorf("txn: push intent: %w", err)
 	}
