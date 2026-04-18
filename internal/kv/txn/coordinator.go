@@ -134,19 +134,42 @@ func (tc *TxnCoordSender) Delete(key []byte) error {
 // writeLocked is the shared path for Put and Delete. Naming mirrors standard
 // Go convention even though this coordinator is not internally locked — the
 // contract is "caller ensures no concurrent use."
+//
+// If the underlying MVCC call returns a WriteIntentError, we delegate to
+// resolveForeignIntent (Step 4): a blocker that's COMMITTED or ABORTED is
+// finalized and we retry; a PENDING blocker triggers a priority fight. The
+// retry loop is bounded so a pathological case can't hang forever.
 func (tc *TxnCoordSender) writeLocked(key, value []byte, isDelete bool) error {
 	if tc.txn.IsFinalized() {
 		return ErrTxnFinalized
 	}
 
-	var err error
-	if isDelete {
-		err = mvcc.MVCCDelete(tc.engine, key, tc.txn.WriteTimestamp, &tc.txn.ID)
-	} else {
-		err = mvcc.MVCCPut(tc.engine, key, tc.txn.WriteTimestamp, value, &tc.txn.ID)
-	}
-	if err != nil {
-		return err
+	for range maxWriteIntentResolutions {
+		var err error
+		if isDelete {
+			err = mvcc.MVCCDelete(tc.engine, key, tc.txn.WriteTimestamp, &tc.txn.ID)
+		} else {
+			err = mvcc.MVCCPut(tc.engine, key, tc.txn.WriteTimestamp, value, &tc.txn.ID)
+		}
+		if err == nil {
+			break
+		}
+
+		intentErr := extractWriteIntent(err)
+		if intentErr == nil {
+			return err
+		}
+
+		retry, resolveErr := tc.resolveForeignIntent(intentErr)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if !retry {
+			// Unreachable: resolveForeignIntent returns (false, nil) never —
+			// (false, err) is the retry=false path. Defensive.
+			return fmt.Errorf("txn: unexpected non-retry with nil error")
+		}
+		// retry=true — loop around and try the MVCC write again.
 	}
 
 	tc.txn.AddIntentKey(key)

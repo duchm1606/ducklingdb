@@ -2,12 +2,53 @@ package mvcc
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/duchm1606/ducklingdb/internal/storage"
 	"github.com/duchm1606/ducklingdb/internal/util/hlc"
 )
 
+// ErrWriteIntent is the sentinel for write-intent conflicts. Callers that
+// just need to detect "is this a write-intent error?" use errors.Is.
+// Callers that need the conflict details (blocker's TxnID, intent timestamp,
+// the key) use errors.As with *WriteIntentError.
 var ErrWriteIntent = errors.New("mvcc: write intent")
+
+// WriteIntentError describes a write-intent conflict. It identifies the
+// blocking transaction so the conflict-resolution layer can look up the
+// blocker's record and decide whether to push, abort, or retry.
+//
+// WriteIntentError wraps ErrWriteIntent, so legacy errors.Is(err, ErrWriteIntent)
+// checks continue to match.
+type WriteIntentError struct {
+	Key       []byte
+	TxnID     TxnID
+	Timestamp hlc.Timestamp
+}
+
+// Error implements the error interface.
+func (e *WriteIntentError) Error() string {
+	return fmt.Sprintf("mvcc: write intent on %q by txn %x at %s", e.Key, e.TxnID[:4], e.Timestamp)
+}
+
+// Is reports that WriteIntentError matches the ErrWriteIntent sentinel.
+func (e *WriteIntentError) Is(target error) bool {
+	return target == ErrWriteIntent
+}
+
+// newWriteIntentError constructs a WriteIntentError from the metadata of the
+// blocking key. Called from the three sites in mvcc.go that used to return
+// ErrWriteIntent directly.
+func newWriteIntentError(key []byte, meta MVCCMetadata) *WriteIntentError {
+	err := &WriteIntentError{
+		Key:       append([]byte(nil), key...),
+		Timestamp: meta.TxnTimestamp,
+	}
+	if meta.Txn != nil {
+		err.TxnID = *meta.Txn
+	}
+	return err
+}
 
 // MVCC value encoding: a 1-byte tag prefix distinguishes live values from
 // tombstones. The LSM engine stores raw bytes and doesn't know about MVCC,
@@ -78,7 +119,7 @@ func MVCCGet(engine storage.Engine, key []byte, timestamp hlc.Timestamp, opts Re
 		ownIntent := opts.Txn != nil && *opts.Txn == *meta.Txn
 
 		if intentVisible && !ownIntent {
-			return nil, ErrWriteIntent
+			return nil, newWriteIntentError(key, meta)
 		}
 	}
 
@@ -147,7 +188,7 @@ func MVCCPut(engine storage.Engine, key []byte, timestamp hlc.Timestamp, value [
 	if meta.HasIntent() {
 		ownIntent := txn != nil && *txn == *meta.Txn
 		if !ownIntent {
-			return ErrWriteIntent
+			return newWriteIntentError(key, meta)
 		}
 	}
 
@@ -198,7 +239,7 @@ func MVCCDelete(engine storage.Engine, key []byte, timestamp hlc.Timestamp, txn 
 	if meta.HasIntent() {
 		ownIntent := txn != nil && *txn == *meta.Txn
 		if !ownIntent {
-			return ErrWriteIntent
+			return newWriteIntentError(key, meta)
 		}
 	}
 

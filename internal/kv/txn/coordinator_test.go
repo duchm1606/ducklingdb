@@ -322,13 +322,15 @@ func TestLoadTxnRecord_Missing(t *testing.T) {
 	}
 }
 
-func TestPut_OtherTxnIntent_ReturnsErrWriteIntent(t *testing.T) {
+// TestPut_OverCommittedIntent verifies that an intent from an already-committed
+// transaction is silently finalized and the write succeeds. This is the "ghost
+// conflict" path — the blocker isn't really alive.
+func TestPut_OverCommittedIntent(t *testing.T) {
 	t.Parallel()
 
 	engine := testEngine(t)
 	clock := testClock(t)
 
-	// Txn 1 writes an intent and does NOT commit.
 	tc1, err := Begin(engine, clock, SSI)
 	if err != nil {
 		t.Fatalf("Begin 1: %v", err)
@@ -336,16 +338,22 @@ func TestPut_OtherTxnIntent_ReturnsErrWriteIntent(t *testing.T) {
 	if err := tc1.Put([]byte("k"), []byte("v1")); err != nil {
 		t.Fatalf("Put 1: %v", err)
 	}
+	// Mark tc1 as committed but simulate the cleanup not happening yet by
+	// manually flipping the record. (In a real crash, the coordinator would
+	// have flipped the record and died before intent resolution.)
+	rec, _, _ := LoadTxnRecord(engine, tc1.ID())
+	rec.Status = TxnCommitted
+	data, _ := rec.Encode()
+	_ = mvcc.MVCCPut(engine, TxnRecordKey(tc1.ID()), hlc.Timestamp{}, data, nil)
 
-	// Txn 2 tries to write the same key → should hit ErrWriteIntent. Step 4
-	// will handle this; for now we just verify the error propagates up.
+	// tc2 walks up to the leftover intent. Seeing COMMITTED, it finalizes
+	// tc1's intent and proceeds with its own write.
 	tc2, err := Begin(engine, clock, SSI)
 	if err != nil {
 		t.Fatalf("Begin 2: %v", err)
 	}
-	err = tc2.Put([]byte("k"), []byte("v2"))
-	if !errors.Is(err, mvcc.ErrWriteIntent) {
-		t.Fatalf("Put over foreign intent: got %v, want ErrWriteIntent", err)
+	if err := tc2.Put([]byte("k"), []byte("v2")); err != nil {
+		t.Fatalf("Put 2 should succeed after finalizing committed blocker: %v", err)
 	}
 }
 
