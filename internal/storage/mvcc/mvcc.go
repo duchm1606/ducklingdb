@@ -88,6 +88,49 @@ func newWriteTooOldError(key []byte, requested, existing hlc.Timestamp) *WriteTo
 	}
 }
 
+// ErrReadUncertainty is the sentinel for uncertainty-window conflicts.
+//
+// When the reader's ReadTimestamp is ambiguous relative to another node's
+// clock (within maxOffset), a committed value in the window
+// (ReadTimestamp, ReadTimestamp + maxOffset] might have happened before we
+// started, even though it looks later by timestamp. Rather than return a
+// potentially-wrong snapshot, we force the transaction to restart past the
+// uncertain value.
+//
+// On a single node with zero skew, this error never fires — the check is
+// here so distributed scenarios (M4) plug in without additional changes.
+var ErrReadUncertainty = errors.New("mvcc: read uncertainty")
+
+// UncertaintyError identifies a version within the reader's uncertainty
+// window. ExistingTimestamp is the witnessed timestamp; restart paths bump
+// ReadTimestamp past this value.
+type UncertaintyError struct {
+	Key               []byte
+	ReadTimestamp     hlc.Timestamp
+	MaxTimestamp      hlc.Timestamp
+	ExistingTimestamp hlc.Timestamp
+}
+
+// Error implements error.
+func (e *UncertaintyError) Error() string {
+	return fmt.Sprintf("mvcc: uncertainty on %q: read at %s with max %s, existing %s",
+		e.Key, e.ReadTimestamp, e.MaxTimestamp, e.ExistingTimestamp)
+}
+
+// Is reports sentinel equivalence for errors.Is.
+func (e *UncertaintyError) Is(target error) bool {
+	return target == ErrReadUncertainty
+}
+
+func newUncertaintyError(key []byte, readTS, maxTS, existingTS hlc.Timestamp) *UncertaintyError {
+	return &UncertaintyError{
+		Key:               append([]byte(nil), key...),
+		ReadTimestamp:     readTS,
+		MaxTimestamp:      maxTS,
+		ExistingTimestamp: existingTS,
+	}
+}
+
 // MVCC value encoding: a 1-byte tag prefix distinguishes live values from
 // tombstones. The LSM engine stores raw bytes and doesn't know about MVCC,
 // so we encode the distinction into the value itself.
@@ -121,6 +164,12 @@ func decodeMVCCValue(raw []byte) ([]byte, bool) {
 type ReadOptions struct {
 	// Txn is the reading transaction's ID. nil means non-transactional.
 	Txn *TxnID
+	// MaxTimestamp is the upper bound of the reader's uncertainty window.
+	// A committed or foreign-intent entry with timestamp in
+	// (ReadTimestamp, MaxTimestamp] is treated as "happened before but we
+	// cannot tell" and surfaces an UncertaintyError. Zero disables the
+	// check (single-node or non-transactional reads).
+	MaxTimestamp hlc.Timestamp
 }
 
 // MVCCGet reads the newest version of key with timestamp ≤ the given timestamp.
@@ -158,6 +207,22 @@ func MVCCGet(engine storage.Engine, key []byte, timestamp hlc.Timestamp, opts Re
 
 		if intentVisible && !ownIntent {
 			return nil, newWriteIntentError(key, meta)
+		}
+	}
+
+	// Step 2b: Uncertainty-window check.
+	// If the caller supplied a MaxTimestamp and the newest version (committed
+	// or foreign intent) lands in (ReadTimestamp, MaxTimestamp], surface an
+	// UncertaintyError so the caller restarts past the uncertain write.
+	//
+	// Our own intent is excluded — we always see our own writes regardless
+	// of timestamp, and restarting because of ourselves would loop forever.
+	if !opts.MaxTimestamp.IsEmpty() &&
+		timestamp.Less(meta.Timestamp) &&
+		meta.Timestamp.LessEq(opts.MaxTimestamp) {
+		ownIntent := meta.HasIntent() && opts.Txn != nil && *opts.Txn == *meta.Txn
+		if !ownIntent {
+			return nil, newUncertaintyError(key, timestamp, opts.MaxTimestamp, meta.Timestamp)
 		}
 	}
 

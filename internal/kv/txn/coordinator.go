@@ -129,7 +129,8 @@ func (tc *TxnCoordSender) Get(key []byte) ([]byte, error) {
 	for range maxWriteIntentResolutions {
 		var err error
 		val, err = mvcc.MVCCGet(tc.engine, key, tc.txn.ReadTimestamp, mvcc.ReadOptions{
-			Txn: &tc.txn.ID,
+			Txn:          &tc.txn.ID,
+			MaxTimestamp: tc.txn.MaxTimestamp,
 		})
 		if err == nil {
 			// Success: register the read so future writers push past us.

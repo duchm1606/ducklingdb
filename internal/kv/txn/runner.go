@@ -6,6 +6,7 @@ import (
 
 	"github.com/duchm1606/ducklingdb/internal/kv/tscache"
 	"github.com/duchm1606/ducklingdb/internal/storage"
+	"github.com/duchm1606/ducklingdb/internal/storage/mvcc"
 	"github.com/duchm1606/ducklingdb/internal/util/hlc"
 )
 
@@ -84,7 +85,16 @@ func RunTransaction(
 		// Phase 1: run the user's closure.
 		fnErr := fn(tc)
 
-		// Phase 2: retry-error handling.
+		// Phase 2a: uncertainty-window restart.
+		// Advance the clock past the witnessed uncertain timestamp so the
+		// next attempt's fresh ReadTimestamp sits above the window.
+		if unc := extractUncertaintyError(fnErr); unc != nil {
+			clock.Update(unc.ExistingTimestamp)
+			_ = tc.Abort()
+			continue
+		}
+
+		// Phase 2b: retry-error handling.
 		if retry := extractRetryError(fnErr); retry != nil {
 			nextPriorityFloor = bumpPriorityFloor(tc.txn.Priority, retry.SuggestedMinPri)
 			lastRetry = retry
@@ -127,6 +137,15 @@ func extractRetryError(err error) *TxnRetryError {
 	var retry *TxnRetryError
 	if errors.As(err, &retry) {
 		return retry
+	}
+	return nil
+}
+
+// extractUncertaintyError pulls a *UncertaintyError from an error chain.
+func extractUncertaintyError(err error) *mvcc.UncertaintyError {
+	var unc *mvcc.UncertaintyError
+	if errors.As(err, &unc) {
+		return unc
 	}
 	return nil
 }
