@@ -40,7 +40,7 @@ func TestBegin_WritesPendingRecord(t *testing.T) {
 	engine := testEngine(t)
 	clock := testClock(t)
 
-	tc, err := Begin(engine, clock, SSI)
+	tc, err := Begin(engine, clock, nil, SSI)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestBegin_UniqueIDs(t *testing.T) {
 
 	seen := make(map[mvcc.TxnID]struct{})
 	for i := range 50 {
-		tc, err := Begin(engine, clock, SSI)
+		tc, err := Begin(engine, clock, nil, SSI)
 		if err != nil {
 			t.Fatalf("Begin %d: %v", i, err)
 		}
@@ -96,7 +96,7 @@ func TestPut_Get_SameTransaction(t *testing.T) {
 	engine := testEngine(t)
 	clock := testClock(t)
 
-	tc, err := Begin(engine, clock, SSI)
+	tc, err := Begin(engine, clock, nil, SSI)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestCommit_MakesIntentsVisible(t *testing.T) {
 	engine := testEngine(t)
 	clock := testClock(t)
 
-	tc, err := Begin(engine, clock, SSI)
+	tc, err := Begin(engine, clock, nil, SSI)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestAbort_CleansUpIntents(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	tc, err := Begin(engine, clock, SSI)
+	tc, err := Begin(engine, clock, nil, SSI)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestDelete_AsIntent(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	tc, err := Begin(engine, clock, SSI)
+	tc, err := Begin(engine, clock, nil, SSI)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestCommit_TracksAllIntentKeys(t *testing.T) {
 	engine := testEngine(t)
 	clock := testClock(t)
 
-	tc, err := Begin(engine, clock, SSI)
+	tc, err := Begin(engine, clock, nil, SSI)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestOperations_AfterFinalized(t *testing.T) {
 	engine := testEngine(t)
 	clock := testClock(t)
 
-	tc, err := Begin(engine, clock, SSI)
+	tc, err := Begin(engine, clock, nil, SSI)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestPut_OverCommittedIntent(t *testing.T) {
 	engine := testEngine(t)
 	clock := testClock(t)
 
-	tc1, err := Begin(engine, clock, SSI)
+	tc1, err := Begin(engine, clock, nil, SSI)
 	if err != nil {
 		t.Fatalf("Begin 1: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestPut_OverCommittedIntent(t *testing.T) {
 
 	// tc2 walks up to the leftover intent. Seeing COMMITTED, it finalizes
 	// tc1's intent and proceeds with its own write.
-	tc2, err := Begin(engine, clock, SSI)
+	tc2, err := Begin(engine, clock, nil, SSI)
 	if err != nil {
 		t.Fatalf("Begin 2: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestCommit_WriteRegisteredBeforePossibleCrash(t *testing.T) {
 	engine := testEngine(t)
 	clock := testClock(t)
 
-	tc, err := Begin(engine, clock, SSI)
+	tc, err := Begin(engine, clock, nil, SSI)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}

@@ -181,3 +181,78 @@ func findPreviousVersion(
 	_, isTombstone := decodeMVCCValue(iter.Value())
 	return found.Timestamp, true, isTombstone, nil
 }
+
+// MVCCPushIntent moves a pending intent to a later timestamp without
+// committing it. The intent continues to belong to the same transaction and
+// remains uncommitted — only its physical timestamp changes.
+//
+// Use case: a reader encounters an intent at ts_intent ≤ ts_read. Rather than
+// block waiting for the intent to resolve, the reader pushes the intent
+// above ts_read. After the push, MVCCGet's intent-visibility check
+// (intent.TxnTimestamp ≤ readTimestamp) is false, so the intent is treated
+// as "in the future" for this reader and the prior committed version is
+// returned. The writer still owns the intent and will commit at the pushed
+// timestamp on successful commit.
+//
+// Behavior:
+//   - No metadata exists or no intent is present → no-op (returns nil).
+//   - Metadata intent belongs to a different txn → no-op (race; the other
+//     txn's resolution path will handle it).
+//   - newTimestamp ≤ current intent timestamp → no-op (push must strictly
+//     advance).
+//   - Otherwise, the existing intent entry is rewritten at newTimestamp and
+//     metadata is updated. The old entry is deleted.
+func MVCCPushIntent(engine storage.Engine, key []byte, txnID TxnID, newTimestamp hlc.Timestamp) error {
+	metaKey := EncodeMeta(key)
+	metaVal, err := engine.Get(metaKey)
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("push intent: read metadata: %w", err)
+	}
+	meta, err := DecodeMetadata(metaVal)
+	if err != nil {
+		return fmt.Errorf("push intent: decode metadata: %w", err)
+	}
+
+	// Nothing to push if no intent, or the intent is owned by someone else,
+	// or the push would not advance the timestamp.
+	if !meta.HasIntent() || *meta.Txn != txnID {
+		return nil
+	}
+	if newTimestamp.LessEq(meta.TxnTimestamp) {
+		return nil
+	}
+
+	// Read the existing intent entry's raw bytes (including the MVCC value
+	// tag so we preserve live-vs-tombstone distinction).
+	oldEncKey := Encode(MVCCKey{Key: key, Timestamp: meta.TxnTimestamp})
+	raw, err := engine.Get(oldEncKey)
+	if err != nil {
+		return fmt.Errorf("push intent: read intent entry: %w", err)
+	}
+
+	// Write the intent at the new timestamp, then delete the old slot.
+	// Order matters: if we crashed between these two operations, there
+	// would temporarily be two entries for the same intent. MVCCGet's
+	// descending-timestamp seek would still find the newer (pushed) one
+	// first, so the semantic is correct during the window. The leftover
+	// older entry would be cleaned up on the next resolve.
+	newEncKey := Encode(MVCCKey{Key: key, Timestamp: newTimestamp})
+	if err := engine.Put(newEncKey, raw); err != nil {
+		return fmt.Errorf("push intent: write new entry: %w", err)
+	}
+	if err := engine.Delete(oldEncKey); err != nil {
+		return fmt.Errorf("push intent: delete old entry: %w", err)
+	}
+
+	// Update metadata to point at the new timestamp.
+	meta.Timestamp = newTimestamp
+	meta.TxnTimestamp = newTimestamp
+	newMeta, err := meta.Encode()
+	if err != nil {
+		return fmt.Errorf("push intent: encode metadata: %w", err)
+	}
+	return engine.Put(metaKey, newMeta)
+}

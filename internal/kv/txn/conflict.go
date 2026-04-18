@@ -120,6 +120,87 @@ func extractWriteIntent(err error) *mvcc.WriteIntentError {
 	return nil
 }
 
+// extractWriteTooOld pulls a *WriteTooOldError from an error chain.
+func extractWriteTooOld(err error) *mvcc.WriteTooOldError {
+	var too *mvcc.WriteTooOldError
+	if errors.As(err, &too) {
+		return too
+	}
+	return nil
+}
+
+// pushPastCachedRead bumps tc.txn.WriteTimestamp past any cached read on key.
+// A no-op if there is no cache (tests) or the cache already sits below our
+// current WriteTimestamp. See blog 15 for the underlying anomaly.
+func (tc *TxnCoordSender) pushPastCachedRead(key []byte) {
+	if tc.tscache == nil {
+		return
+	}
+	cached := tc.tscache.GetMax(key)
+	if tc.txn.WriteTimestamp.LessEq(cached) {
+		tc.bumpWriteTimestampTo(cached.Next())
+	}
+}
+
+// bumpWriteTimestampTo advances WriteTimestamp if ts is strictly greater than
+// the current value. The transaction record is not persisted here — callers
+// persist via writeTxnRecord after the surrounding MVCC operation succeeds.
+func (tc *TxnCoordSender) bumpWriteTimestampTo(ts hlc.Timestamp) {
+	if tc.txn.WriteTimestamp.Less(ts) {
+		tc.txn.WriteTimestamp = ts
+	}
+}
+
+// handleReadIntent is the read-side counterpart to resolveForeignIntent.
+// When a read encounters an intent from another transaction, we have three
+// outcomes:
+//
+//   - Blocker COMMITTED: finalize its intent as committed, retry the read.
+//   - Blocker ABORTED / missing: finalize as aborted, retry.
+//   - Blocker PENDING: push the blocker's WriteTimestamp and intent timestamp
+//     past our ReadTimestamp so the intent becomes "in the future" for us.
+//     Retry. The blocker continues running; it will commit at the pushed
+//     timestamp (SSI may later force it to restart — that's Step 7).
+//
+// We never block the reader. Each resolution either removes the obstacle or
+// moves it out of our way.
+func (tc *TxnCoordSender) handleReadIntent(intentErr *mvcc.WriteIntentError) (retry bool, err error) {
+	blocker, found, err := LoadTxnRecord(tc.engine, intentErr.TxnID)
+	if err != nil {
+		return false, fmt.Errorf("txn: load blocker record: %w", err)
+	}
+	if !found || blocker.Status == TxnAborted {
+		return true, tc.finalizeForeignIntent(intentErr, mvcc.TxnAborted, hlc.Timestamp{})
+	}
+	if blocker.Status == TxnCommitted {
+		return true, tc.finalizeForeignIntent(intentErr, mvcc.TxnCommitted, blocker.WriteTimestamp)
+	}
+
+	// PENDING: push the blocker past our read timestamp. The push must land
+	// strictly above tc.txn.ReadTimestamp so the next MVCCGet's visibility
+	// check (intent.TxnTimestamp.LessEq(readTS)) returns false.
+	pushTo := tc.txn.ReadTimestamp.Next()
+	if blocker.WriteTimestamp.Less(pushTo) {
+		blocker.WriteTimestamp = pushTo
+		blocker.LastHeartbeat = tc.clock.Now()
+		data, encErr := blocker.Encode()
+		if encErr != nil {
+			return false, fmt.Errorf("txn: encode pushed blocker: %w", encErr)
+		}
+		// Persist the bumped record.
+		if err := mvcc.MVCCPut(tc.engine, TxnRecordKey(blocker.ID), hlc.Timestamp{}, data, nil); err != nil {
+			return false, fmt.Errorf("txn: persist pushed blocker record: %w", err)
+		}
+	}
+	// Push the physical intent to match. After this the next MVCCGet sees the
+	// intent above our ReadTimestamp and falls through to the prior committed
+	// version.
+	if err := mvcc.MVCCPushIntent(tc.engine, intentErr.Key, intentErr.TxnID, pushTo); err != nil {
+		return false, fmt.Errorf("txn: push intent: %w", err)
+	}
+	return true, nil
+}
+
 // Compile-time assertions that the error types satisfy error.
 var (
 	_ error = (*TxnRetryError)(nil)

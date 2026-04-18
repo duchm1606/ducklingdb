@@ -50,6 +50,44 @@ func newWriteIntentError(key []byte, meta MVCCMetadata) *WriteIntentError {
 	return err
 }
 
+// ErrWriteTooOld is the sentinel for write-timestamp-too-old conflicts.
+// Callers use errors.Is for detection and errors.As to recover the
+// existing committed timestamp they need to push past.
+var ErrWriteTooOld = errors.New("mvcc: write timestamp too old")
+
+// WriteTooOldError is returned by MVCCPut / MVCCDelete when the requested
+// write timestamp is at or below an already-committed version's timestamp.
+// Inserting a new version below an existing committed one would break
+// serializability: a reader scanning at an intermediate timestamp would see
+// our "older" write as if it were the newest committed value.
+//
+// The resolution is to push the write timestamp past ExistingTimestamp and
+// retry. The coordinator (Step 5) handles that loop.
+type WriteTooOldError struct {
+	Key               []byte
+	RequestedTimestamp hlc.Timestamp
+	ExistingTimestamp  hlc.Timestamp
+}
+
+// Error implements the error interface.
+func (e *WriteTooOldError) Error() string {
+	return fmt.Sprintf("mvcc: write too old on %q: requested %s, existing %s",
+		e.Key, e.RequestedTimestamp, e.ExistingTimestamp)
+}
+
+// Is reports that WriteTooOldError matches the ErrWriteTooOld sentinel.
+func (e *WriteTooOldError) Is(target error) bool {
+	return target == ErrWriteTooOld
+}
+
+func newWriteTooOldError(key []byte, requested, existing hlc.Timestamp) *WriteTooOldError {
+	return &WriteTooOldError{
+		Key:                append([]byte(nil), key...),
+		RequestedTimestamp: requested,
+		ExistingTimestamp:  existing,
+	}
+}
+
 // MVCC value encoding: a 1-byte tag prefix distinguishes live values from
 // tombstones. The LSM engine stores raw bytes and doesn't know about MVCC,
 // so we encode the distinction into the value itself.
@@ -183,12 +221,22 @@ func MVCCPut(engine storage.Engine, key []byte, timestamp hlc.Timestamp, value [
 		return engine.Put(metaKey, metaData)
 	}
 
-	// Step 2: Check for conflicting intents.
+	// Step 2a: Check for conflicting intents.
 	// Two different transactions cannot both hold intents on the same key.
 	if meta.HasIntent() {
 		ownIntent := txn != nil && *txn == *meta.Txn
 		if !ownIntent {
 			return newWriteIntentError(key, meta)
+		}
+	} else {
+		// Step 2b: Check for a committed version at or after our timestamp.
+		// Writing a new version below a committed one would break
+		// serializability. The caller must push forward and retry.
+		//
+		// Guarded on "no intent" so that writing our own intent a second
+		// time at the same timestamp (e.g., coordinator retrying) is allowed.
+		if !meta.Timestamp.IsEmpty() && timestamp.LessEq(meta.Timestamp) {
+			return newWriteTooOldError(key, timestamp, meta.Timestamp)
 		}
 	}
 
@@ -235,11 +283,16 @@ func MVCCDelete(engine storage.Engine, key []byte, timestamp hlc.Timestamp, txn 
 		return err
 	}
 
-	// Step 2: Check for conflicting intents.
+	// Step 2a: Check for conflicting intents.
 	if meta.HasIntent() {
 		ownIntent := txn != nil && *txn == *meta.Txn
 		if !ownIntent {
 			return newWriteIntentError(key, meta)
+		}
+	} else {
+		// Step 2b: Same write-too-old protection as MVCCPut.
+		if !meta.Timestamp.IsEmpty() && timestamp.LessEq(meta.Timestamp) {
+			return newWriteTooOldError(key, timestamp, meta.Timestamp)
 		}
 	}
 

@@ -26,7 +26,7 @@ func TestConflict_AbortedBlocker_Retries(t *testing.T) {
 	clock := testClock(t)
 
 	// Blocker: begin, write an intent, abort.
-	blocker, err := Begin(engine, clock, SSI)
+	blocker, err := Begin(engine, clock, nil, SSI)
 	if err != nil {
 		t.Fatalf("Begin blocker: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestConflict_AbortedBlocker_Retries(t *testing.T) {
 	}
 
 	// Writer: sees the intent, reads the ABORTED record, cleans up, proceeds.
-	writer, err := Begin(engine, clock, SSI)
+	writer, err := Begin(engine, clock, nil, SSI)
 	if err != nil {
 		t.Fatalf("Begin writer: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestConflict_MissingBlockerRecord_Retries(t *testing.T) {
 		t.Fatalf("seed stray intent: %v", err)
 	}
 
-	writer, err := Begin(engine, clock, SSI)
+	writer, err := Begin(engine, clock, nil, SSI)
 	if err != nil {
 		t.Fatalf("Begin writer: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestConflict_HigherPriorityWins(t *testing.T) {
 	engine := testEngine(t)
 	clock := testClock(t)
 
-	loser, err := Begin(engine, clock, SSI)
+	loser, err := Begin(engine, clock, nil, SSI)
 	if err != nil {
 		t.Fatalf("Begin loser: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestConflict_HigherPriorityWins(t *testing.T) {
 		t.Fatalf("loser Put: %v", err)
 	}
 
-	winner, err := Begin(engine, clock, SSI)
+	winner, err := Begin(engine, clock, nil, SSI)
 	if err != nil {
 		t.Fatalf("Begin winner: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestConflict_LowerPriorityReturnsRetryError(t *testing.T) {
 	engine := testEngine(t)
 	clock := testClock(t)
 
-	holder, err := Begin(engine, clock, SSI)
+	holder, err := Begin(engine, clock, nil, SSI)
 	if err != nil {
 		t.Fatalf("Begin holder: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestConflict_LowerPriorityReturnsRetryError(t *testing.T) {
 		t.Fatalf("holder Put: %v", err)
 	}
 
-	underdog, err := Begin(engine, clock, SSI)
+	underdog, err := Begin(engine, clock, nil, SSI)
 	if err != nil {
 		t.Fatalf("Begin underdog: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestConflict_EqualPriorityCurrentLoses(t *testing.T) {
 	engine := testEngine(t)
 	clock := testClock(t)
 
-	holder, err := Begin(engine, clock, SSI)
+	holder, err := Begin(engine, clock, nil, SSI)
 	if err != nil {
 		t.Fatalf("Begin holder: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestConflict_EqualPriorityCurrentLoses(t *testing.T) {
 		t.Fatalf("holder Put: %v", err)
 	}
 
-	tie, err := Begin(engine, clock, SSI)
+	tie, err := Begin(engine, clock, nil, SSI)
 	if err != nil {
 		t.Fatalf("Begin tie: %v", err)
 	}
