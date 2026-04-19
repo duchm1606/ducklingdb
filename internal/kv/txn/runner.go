@@ -98,7 +98,12 @@ func RunTransaction(
 		if retry := extractRetryError(fnErr); retry != nil {
 			nextPriorityFloor = bumpPriorityFloor(tc.txn.Priority, retry.SuggestedMinPri)
 			lastRetry = retry
-			_ = tc.Abort() // best-effort cleanup; external abort is fine
+			// Advance the shared clock past our (possibly pushed) WriteTimestamp
+			// so the next attempt's Begin sees a ReadTimestamp above any
+			// committed version that caused the push. Without this, retries can
+			// loop seeing the same WriteTooOld conditions under contention.
+			clock.Update(tc.txn.WriteTimestamp)
+			_ = tc.Abort()
 			continue
 		}
 		// Non-retry error from the closure → permanent failure.
@@ -115,8 +120,10 @@ func RunTransaction(
 		if retry := extractRetryError(commitErr); retry != nil {
 			nextPriorityFloor = bumpPriorityFloor(tc.txn.Priority, retry.SuggestedMinPri)
 			lastRetry = retry
-			// Commit's refresh + isolation check may have already aborted us,
-			// but calling Abort again is idempotent if we're still pending.
+			// See comment above: advance the clock past our WriteTimestamp so
+			// the next Begin picks a ReadTimestamp that doesn't immediately
+			// re-hit the same push.
+			clock.Update(tc.txn.WriteTimestamp)
 			_ = tc.Abort()
 			continue
 		}

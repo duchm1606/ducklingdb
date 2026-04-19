@@ -31,6 +31,8 @@ func MVCCResolveWriteIntent(
 	status TxnStatus,
 	commitTimestamp hlc.Timestamp,
 ) error {
+	mvccMu.Lock()
+	defer mvccMu.Unlock()
 	// Step 1: Read and validate metadata.
 	metaKey := EncodeMeta(key)
 	metaVal, err := engine.Get(metaKey)
@@ -203,6 +205,8 @@ func findPreviousVersion(
 //   - Otherwise, the existing intent entry is rewritten at newTimestamp and
 //     metadata is updated. The old entry is deleted.
 func MVCCPushIntent(engine storage.Engine, key []byte, txnID TxnID, newTimestamp hlc.Timestamp) error {
+	mvccMu.Lock()
+	defer mvccMu.Unlock()
 	metaKey := EncodeMeta(key)
 	metaVal, err := engine.Get(metaKey)
 	if errors.Is(err, storage.ErrKeyNotFound) {

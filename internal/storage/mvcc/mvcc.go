@@ -3,10 +3,22 @@ package mvcc
 import (
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/duchm1606/ducklingdb/internal/storage"
 	"github.com/duchm1606/ducklingdb/internal/util/hlc"
 )
+
+// mvccMu serializes read-modify-write sequences (MVCCPut, MVCCDelete,
+// MVCCPushIntent, MVCCResolveWriteIntent). Each of these operations does
+// multiple engine reads and writes whose correctness depends on no other
+// MVCC-level mutation racing between them.
+//
+// This is a coarse single-node lock — production systems would use per-key
+// striped locks or MVCC-level version/epoch-based optimistic concurrency.
+// For M2's educational scope, correctness under concurrency is the
+// priority; throughput optimizations can come later (M4+).
+var mvccMu sync.Mutex
 
 // ErrWriteIntent is the sentinel for write-intent conflicts. Callers that
 // just need to detect "is this a write-intent error?" use errors.Is.
@@ -262,6 +274,8 @@ func MVCCGet(engine storage.Engine, key []byte, timestamp hlc.Timestamp, opts Re
 // MVCCPut writes a new timestamped version of key. If txn is non-nil, the
 // write is recorded as an intent belonging to that transaction.
 func MVCCPut(engine storage.Engine, key []byte, timestamp hlc.Timestamp, value []byte, txn *TxnID) error {
+	mvccMu.Lock()
+	defer mvccMu.Unlock()
 	// Step 1: Read existing metadata (may not exist — first write to this key).
 	metaKey := EncodeMeta(key)
 	var meta MVCCMetadata
@@ -336,6 +350,8 @@ func MVCCPut(engine storage.Engine, key []byte, timestamp hlc.Timestamp, value [
 // It is semantically identical to MVCCPut with a nil value — the same intent
 // checks and metadata updates apply.
 func MVCCDelete(engine storage.Engine, key []byte, timestamp hlc.Timestamp, txn *TxnID) error {
+	mvccMu.Lock()
+	defer mvccMu.Unlock()
 	// Step 1: Read existing metadata.
 	metaKey := EncodeMeta(key)
 	var meta MVCCMetadata
