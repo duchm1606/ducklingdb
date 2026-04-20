@@ -134,3 +134,118 @@ func TestNodeEngineReadWrite(t *testing.T) {
 		t.Fatalf("Get: got %q, want %q", val, "value")
 	}
 }
+
+func TestBatchRPCPutAndGet(t *testing.T) {
+	n, err := NewNode(NodeConfig{
+		Addr:    ":0",
+		DataDir: t.TempDir(),
+		NodeID:  1,
+	})
+	if err != nil {
+		t.Fatalf("NewNode: %v", err)
+	}
+	n.Start()
+	defer n.Stop()
+
+	conn, err := n.RPCContext().GRPCDialNode(n.RPCAddr())
+	if err != nil {
+		t.Fatalf("GRPCDialNode: %v", err)
+	}
+	client := pb.NewInternalClient(conn)
+
+	putResp, err := client.Batch(context.Background(), &pb.BatchRequest{
+		Header: &pb.Header{Timestamp: &pb.Timestamp{WallTime: 100}},
+		Requests: []*pb.RequestUnion{
+			{Value: &pb.RequestUnion_Put{Put: &pb.PutRequest{
+				Key:   []byte("rpc-key"),
+				Value: &pb.Value{RawBytes: []byte("rpc-val")},
+			}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Put via RPC: %v", err)
+	}
+	if putResp.Error != nil {
+		t.Fatalf("Put error: %s", putResp.Error.Message)
+	}
+
+	getResp, err := client.Batch(context.Background(), &pb.BatchRequest{
+		Header: &pb.Header{Timestamp: &pb.Timestamp{WallTime: 100, Logical: 1}},
+		Requests: []*pb.RequestUnion{
+			{Value: &pb.RequestUnion_Get{Get: &pb.GetRequest{
+				Key: []byte("rpc-key"),
+			}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Get via RPC: %v", err)
+	}
+	if getResp.Error != nil {
+		t.Fatalf("Get error: %s", getResp.Error.Message)
+	}
+
+	val := getResp.Responses[0].GetGet().GetValue()
+	if val == nil || string(val.RawBytes) != "rpc-val" {
+		t.Fatalf("got %q, want %q", val.GetRawBytes(), "rpc-val")
+	}
+}
+
+func TestCrossNodeBatchRPC(t *testing.T) {
+	nodeA, err := NewNode(NodeConfig{
+		Addr:    ":0",
+		DataDir: t.TempDir(),
+		NodeID:  1,
+	})
+	if err != nil {
+		t.Fatalf("NewNode A: %v", err)
+	}
+	nodeA.Start()
+	defer nodeA.Stop()
+
+	nodeB, err := NewNode(NodeConfig{
+		Addr:    ":0",
+		DataDir: t.TempDir(),
+		NodeID:  2,
+	})
+	if err != nil {
+		t.Fatalf("NewNode B: %v", err)
+	}
+	nodeB.Start()
+	defer nodeB.Stop()
+
+	conn, err := nodeB.RPCContext().GRPCDialNode(nodeA.RPCAddr())
+	if err != nil {
+		t.Fatalf("B dial A: %v", err)
+	}
+	client := pb.NewInternalClient(conn)
+
+	_, err = client.Batch(context.Background(), &pb.BatchRequest{
+		Header: &pb.Header{Timestamp: &pb.Timestamp{WallTime: 100}},
+		Requests: []*pb.RequestUnion{
+			{Value: &pb.RequestUnion_Put{Put: &pb.PutRequest{
+				Key:   []byte("cross-key"),
+				Value: &pb.Value{RawBytes: []byte("cross-val")},
+			}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Put A from B: %v", err)
+	}
+
+	getResp, err := client.Batch(context.Background(), &pb.BatchRequest{
+		Header: &pb.Header{Timestamp: &pb.Timestamp{WallTime: 100, Logical: 1}},
+		Requests: []*pb.RequestUnion{
+			{Value: &pb.RequestUnion_Get{Get: &pb.GetRequest{
+				Key: []byte("cross-key"),
+			}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Get A from B: %v", err)
+	}
+
+	val := getResp.Responses[0].GetGet().GetValue()
+	if val == nil || string(val.RawBytes) != "cross-val" {
+		t.Fatalf("got %q, want %q", val.GetRawBytes(), "cross-val")
+	}
+}

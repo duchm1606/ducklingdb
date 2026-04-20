@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"time"
 
+	"github.com/duchm1606/ducklingdb/internal/kv/kvserver"
 	pb "github.com/duchm1606/ducklingdb/internal/proto"
 	"github.com/duchm1606/ducklingdb/internal/rpc"
 	"github.com/duchm1606/ducklingdb/internal/storage"
@@ -69,8 +71,11 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 		stopper:    NewStopper(),
 	}
 
-	hb := rpc.NewHeartbeatService(clock, int32(cfg.NodeID))
-	pb.RegisterInternalServer(srv.GRPCServer(), hb)
+	svc := &nodeServer{
+		heartbeat: rpc.NewHeartbeatService(clock, int32(cfg.NodeID)),
+		batch:     kvserver.NewBatchHandler(engine, clock),
+	}
+	pb.RegisterInternalServer(srv.GRPCServer(), svc)
 
 	return n, nil
 }
@@ -86,10 +91,24 @@ func (n *Node) Stop() {
 	n.engine.Close()
 }
 
-func (n *Node) NodeID() NodeID           { return n.id }
+func (n *Node) NodeID() NodeID                 { return n.id }
 func (n *Node) Descriptor() *pb.NodeDescriptor { return n.desc }
-func (n *Node) Engine() storage.Engine    { return n.engine }
-func (n *Node) Clock() *hlc.Clock         { return n.clock }
-func (n *Node) RPCAddr() string           { return n.rpcServer.Addr() }
-func (n *Node) RPCContext() *rpc.Context   { return n.rpcContext }
-func (n *Node) Stopper() *Stopper         { return n.stopper }
+func (n *Node) Engine() storage.Engine         { return n.engine }
+func (n *Node) Clock() *hlc.Clock              { return n.clock }
+func (n *Node) RPCAddr() string                { return n.rpcServer.Addr() }
+func (n *Node) RPCContext() *rpc.Context       { return n.rpcContext }
+func (n *Node) Stopper() *Stopper              { return n.stopper }
+
+type nodeServer struct {
+	pb.UnimplementedInternalServer
+	heartbeat *rpc.HeartbeatService
+	batch     *kvserver.BatchHandler
+}
+
+func (s *nodeServer) Heartbeat(ctx context.Context, req *pb.PingRequest) (*pb.PingResponse, error) {
+	return s.heartbeat.Heartbeat(ctx, req)
+}
+
+func (s *nodeServer) Batch(ctx context.Context, req *pb.BatchRequest) (*pb.BatchResponse, error) {
+	return s.batch.Batch(ctx, req)
+}
