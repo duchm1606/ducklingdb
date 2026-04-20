@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package ducklingdb.proto;
+
+option go_package = "github.com/duchm1606/ducklingdb/internal/proto";
+
+import "internal/proto/api.proto";
+import "internal/proto/data.proto";
+
+// Internal is the node-to-node RPC service. Every DucklingDB node
+// exposes this service on its gRPC port. It handles both KV operations
+// (via Batch) and heartbeating (via Heartbeat).
+service Internal {
+  // Batch executes a bundle of KV operations on the receiving node.
+  rpc Batch(BatchRequest) returns (BatchResponse) {}
+
+  // Heartbeat is a lightweight ping/pong used for liveness detection
+  // and clock offset measurement between peers.
+  rpc Heartbeat(PingRequest) returns (PingResponse) {}
+}
+
+// PingRequest carries the sender's identity and current HLC timestamp.
+// The receiver uses the timestamp to measure clock offset.
+message PingRequest {
+  int32 node_id = 1;
+  Timestamp server_time = 2;
+}
+
+// PingResponse carries the responder's identity and current HLC
+// timestamp back to the caller.
+message PingResponse {
+  int32 node_id = 1;
+  Timestamp server_time = 2;
+}

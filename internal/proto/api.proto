@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package ducklingdb.proto;
+
+option go_package = "github.com/duchm1606/ducklingdb/internal/proto";
+
+import "internal/proto/data.proto";
+
+// Header carries per-batch metadata: the operation timestamp and an
+// optional transaction context. Every request in the batch inherits
+// these values unless it overrides them (not implemented yet).
+message Header {
+  Timestamp timestamp = 1;
+  TxnMeta txn = 2;
+}
+
+// --- Individual request/response types ---
+
+message GetRequest {
+  bytes key = 1;
+}
+
+message GetResponse {
+  Value value = 1;
+}
+
+message PutRequest {
+  bytes key = 1;
+  Value value = 2;
+}
+
+message PutResponse {}
+
+message DeleteRequest {
+  bytes key = 1;
+}
+
+message DeleteResponse {}
+
+message ScanRequest {
+  bytes start_key = 1;
+  bytes end_key = 2;
+  int64 max_keys = 3;
+}
+
+message ScanResponse {
+  repeated KeyValue rows = 1;
+}
+
+// --- Batch wrappers ---
+
+// RequestUnion wraps one KV operation. The oneof ensures exactly one
+// request type is set per slot in a BatchRequest.
+message RequestUnion {
+  oneof value {
+    GetRequest get = 1;
+    PutRequest put = 2;
+    DeleteRequest delete = 3;
+    ScanRequest scan = 4;
+  }
+}
+
+// ResponseUnion wraps one KV response, matching the request at the
+// same index in the BatchRequest.
+message ResponseUnion {
+  oneof value {
+    GetResponse get = 1;
+    PutResponse put = 2;
+    DeleteResponse delete = 3;
+    ScanResponse scan = 4;
+  }
+}
+
+// BatchRequest bundles multiple KV operations into a single RPC call.
+// The server executes each request sequentially and returns responses
+// in the same order.
+message BatchRequest {
+  Header header = 1;
+  repeated RequestUnion requests = 2;
+}
+
+// BatchResponse contains one response per request, in order. If any
+// request fails, the error field is set and remaining responses may
+// be absent.
+message BatchResponse {
+  repeated ResponseUnion responses = 1;
+  Error error = 2;
+}
