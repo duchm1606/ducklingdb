@@ -9,6 +9,7 @@ import (
 	pb "github.com/duchm1606/ducklingdb/internal/proto"
 	"github.com/duchm1606/ducklingdb/internal/raft"
 	"github.com/duchm1606/ducklingdb/internal/storage/lsm"
+	"github.com/duchm1606/ducklingdb/internal/storage/mvcc"
 	"github.com/duchm1606/ducklingdb/internal/util/hlc"
 	"google.golang.org/protobuf/proto"
 )
@@ -69,7 +70,7 @@ func TestReplicaProposalApplied(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		for _, r := range tr.replicas {
-			if r.rn.Lead() != 0 && r.rn.Lead() == r.id {
+			if r.Lead() != 0 && r.Lead() == r.id {
 				leaderReplica = r
 			}
 		}
@@ -82,9 +83,12 @@ func TestReplicaProposalApplied(t *testing.T) {
 		t.Fatal("no leader elected within 3s")
 	}
 
-	// Propose a Put via BatchRequest
+	// Propose a Put via BatchRequest.
+	// Use a non-zero timestamp so the write is stored as a versioned MVCC
+	// entry (rather than an inline entry), which MVCCScan can retrieve.
+	writeTS := &pb.Timestamp{WallTime: time.Now().UnixNano()}
 	req := &pb.BatchRequest{
-		Header: &pb.Header{},
+		Header: &pb.Header{Timestamp: writeTS},
 		Requests: []*pb.RequestUnion{{
 			Value: &pb.RequestUnion_Put{Put: &pb.PutRequest{
 				Key:   []byte("testkey"),
@@ -100,13 +104,28 @@ func TestReplicaProposalApplied(t *testing.T) {
 		t.Fatalf("propose failed: %v", err)
 	}
 
-	// All 3 replicas should have the key in their engines
-	time.Sleep(200 * time.Millisecond)
+	// Wait for all replicas to apply the committed entry
+	time.Sleep(300 * time.Millisecond)
+
+	// Verify all replicas have the key via MVCC scan
 	for id, r := range tr.replicas {
-		val, err := r.batch.Engine().Get([]byte("testkey"))
-		_ = val
+		kvs, err := mvcc.MVCCScan(
+			r.batch.Engine(),
+			[]byte("testkey"),
+			[]byte("testkey\x00"),
+			hlc.Timestamp{WallTime: time.Now().UnixNano()},
+			mvcc.ReadOptions{},
+		)
 		if err != nil {
-			t.Logf("replica %d: key not yet found (may need more time): %v", id, err)
+			t.Errorf("replica %d: MVCCScan failed: %v", id, err)
+			continue
+		}
+		if len(kvs) == 0 {
+			t.Errorf("replica %d: key not found after replication", id)
+			continue
+		}
+		if string(kvs[0].Value) != "testval" {
+			t.Errorf("replica %d: got %q, want %q", id, string(kvs[0].Value), "testval")
 		}
 	}
 }

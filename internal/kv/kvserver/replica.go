@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pb "github.com/duchm1606/ducklingdb/internal/proto"
@@ -42,6 +43,14 @@ type Replica struct {
 	// sendFn delivers outbound Raft messages.
 	// In production: sendFn sends via gRPC. In tests: delivers in-process.
 	sendFn func([]raft.Message)
+
+	// leadID caches the current leader ID from SoftState, updated only inside
+	// the run() goroutine. Reads from other goroutines use atomic loads to
+	// avoid data races with the concurrent write in handleReady().
+	leadID atomic.Uint64
+
+	// stopOnce ensures Stop() is idempotent and never double-closes stopc.
+	stopOnce sync.Once
 }
 
 // NewReplica constructs a Replica. sendFn delivers outbound messages.
@@ -66,16 +75,22 @@ func (r *Replica) Start() {
 	go r.run()
 }
 
-// Stop shuts down the Ready loop.
+// Stop shuts down the Ready loop. Safe to call multiple times.
 func (r *Replica) Stop() {
-	close(r.stopc)
-	r.ticker.Stop()
+	r.stopOnce.Do(func() {
+		close(r.stopc)
+		r.ticker.Stop()
+	})
 }
+
+// Lead returns the current leader ID as seen by this replica.
+// Safe to call from any goroutine.
+func (r *Replica) Lead() uint64 { return r.leadID.Load() }
 
 // Propose submits a command and blocks until it is committed and applied.
 // Returns an error if the replica is not the leader or the context expires.
 func (r *Replica) Propose(ctx context.Context, data []byte) error {
-	if r.rn.Lead() != r.id {
+	if r.leadID.Load() != r.id {
 		return errors.New("not the leader")
 	}
 	doneCh := make(chan error, 1)
@@ -127,6 +142,12 @@ func (r *Replica) handleReady() {
 		return
 	}
 	rd := r.rn.Ready()
+
+	// Cache the leader ID atomically so Propose() and external callers can
+	// read it from any goroutine without racing against this write.
+	if rd.SoftState != nil {
+		r.leadID.Store(rd.SoftState.Lead)
+	}
 
 	// 1. Persist HardState
 	if !raft.IsEmptyHardState(rd.HardState) {
