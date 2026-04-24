@@ -19,6 +19,8 @@ func NewBatchHandler(engine storage.Engine, clock *hlc.Clock) *BatchHandler {
 	return &BatchHandler{engine: engine, clock: clock}
 }
 
+func (bh *BatchHandler) Engine() storage.Engine { return bh.engine }
+
 func (bh *BatchHandler) Batch(_ context.Context, req *pb.BatchRequest) (*pb.BatchResponse, error) {
 	resp := &pb.BatchResponse{}
 
