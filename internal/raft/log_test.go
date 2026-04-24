@@ -122,3 +122,44 @@ func TestRaftLogIsUpToDate(t *testing.T) {
 		t.Fatal("same term lower index should NOT be up to date")
 	}
 }
+
+func TestNewRaftLogFromPersistedState(t *testing.T) {
+	ms := newMemStorage()
+	ms.hs = HardState{Term: 1, VotedFor: 1, Commit: 2}
+	ms.entries = append(ms.entries,
+		Entry{Term: 1, Index: 1},
+		Entry{Term: 1, Index: 2},
+		Entry{Term: 1, Index: 3},
+	)
+	l := newRaftLog(ms)
+	if l.committed != 2 {
+		t.Fatalf("want committed=2 from HardState, got %d", l.committed)
+	}
+}
+
+func TestRaftLogStableToTermCheck(t *testing.T) {
+	l := newRaftLog(newMemStorage())
+	l.append(Entry{Term: 1, Index: 1}, Entry{Term: 1, Index: 2})
+	// Wrong term: should be a no-op
+	l.stableTo(2, 99)
+	if len(l.unstableEntries()) != 2 {
+		t.Fatal("stableTo with wrong term should not remove entries")
+	}
+	// Correct term: should remove entries
+	l.stableTo(2, 1)
+	if len(l.unstableEntries()) != 0 {
+		t.Fatal("stableTo with correct term should remove all entries")
+	}
+}
+
+func TestRaftLogMaybeCommitTermMismatch(t *testing.T) {
+	l := newRaftLog(newMemStorage())
+	l.append(Entry{Term: 1, Index: 1}, Entry{Term: 1, Index: 2})
+	committed := l.maybeCommit(2, 99) // wrong term
+	if committed {
+		t.Fatal("maybeCommit with wrong term should return false")
+	}
+	if l.committed != 0 {
+		t.Fatalf("committed should remain 0, got %d", l.committed)
+	}
+}

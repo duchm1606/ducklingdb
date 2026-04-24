@@ -1,6 +1,9 @@
 package raft
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var errUnavailable = errors.New("raft: log entry unavailable")
 
@@ -20,7 +23,7 @@ type LogStorage interface {
 // in LogStorage) and unstable entries (in memory, awaiting persistence).
 type RaftLog struct {
 	storage   LogStorage
-	unstable  []Entry  // unstable entries; unstable[i].Index = offset+1+i
+	unstable  []Entry  // entries not yet persisted to LogStorage
 	offset    uint64   // last persisted index
 	committed uint64
 	applied   uint64
@@ -31,15 +34,14 @@ func newRaftLog(storage LogStorage) *RaftLog {
 	if err != nil {
 		lastIdx = 0
 	}
-	committed, err := storage.LastIndex()
+	firstIdx, err := storage.FirstIndex()
 	if err != nil {
-		committed = 0
+		firstIdx = 1
 	}
-	hs, err := storage.InitialState()
-	if err == nil && hs.Commit > 0 && hs.Commit <= committed {
+	committed := firstIdx - 1 // nothing committed until HardState says so
+	hs, hsErr := storage.InitialState()
+	if hsErr == nil && hs.Commit >= firstIdx && hs.Commit <= lastIdx {
 		committed = hs.Commit
-	} else if err != nil {
-		committed = 0
 	}
 	return &RaftLog{
 		storage:   storage,
@@ -113,14 +115,15 @@ func (l *RaftLog) entries(lo, hi uint64) []Entry {
 	// From stable storage
 	stableMax, _ := l.storage.LastIndex()
 	if lo <= stableMax {
-		cap := hi
-		if cap > stableMax+1 {
-			cap = stableMax + 1
+		hiStable := hi
+		if hiStable > stableMax+1 {
+			hiStable = stableMax + 1
 		}
-		se, err := l.storage.Entries(lo, cap)
-		if err == nil {
-			result = append(result, se...)
+		se, err := l.storage.Entries(lo, hiStable)
+		if err != nil {
+			return nil
 		}
+		result = append(result, se...)
 		lo = stableMax + 1
 	}
 	// From unstable entries
@@ -151,6 +154,9 @@ func (l *RaftLog) commitTo(index uint64) {
 
 // appliedTo advances the applied index.
 func (l *RaftLog) appliedTo(index uint64) {
+	if index > l.committed {
+		panic(fmt.Sprintf("raft: appliedTo(%d) > committed(%d)", index, l.committed))
+	}
 	if index > l.applied {
 		l.applied = index
 	}
@@ -179,14 +185,18 @@ func (l *RaftLog) stableTo(index, term uint64) {
 		return
 	}
 	first := l.unstable[0].Index
-	if index >= first {
-		i := int(index - first + 1)
-		if i > len(l.unstable) {
-			i = len(l.unstable)
-		}
-		l.unstable = l.unstable[i:]
-		l.offset = index
+	if index < first {
+		return
 	}
+	if l.unstable[index-first].Term != term {
+		return
+	}
+	i := int(index - first + 1)
+	if i > len(l.unstable) {
+		i = len(l.unstable)
+	}
+	l.unstable = l.unstable[i:]
+	l.offset = index
 }
 
 // isUpToDate returns true if (lastIndex, lastTerm) is at least as up-to-date
