@@ -23,7 +23,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: ducklingdb <start|status> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: ducklingdb <start|status|repl> [flags]")
 		os.Exit(1)
 	}
 	switch os.Args[1] {
@@ -177,6 +177,7 @@ func runRepl(args []string) {
 		fmt.Fprintf(os.Stderr, "error: open engine: %v\n", err)
 		os.Exit(1)
 	}
+	defer engine.Close()
 
 	clock := hlc.NewClock(hlc.SystemWallClock(), 500*time.Millisecond)
 	exec := executor.New(engine, clock)
