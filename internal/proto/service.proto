@@ -17,6 +17,19 @@ service Internal {
   // Heartbeat is a lightweight ping/pong used for liveness detection
   // and clock offset measurement between peers.
   rpc Heartbeat(PingRequest) returns (PingResponse) {}
+
+  // AllocateNodeID is called by a joining node to obtain a unique NodeID
+  // and learn the cluster's identity. Only bootstrap nodes handle this.
+  rpc AllocateNodeID(AllocateNodeIDRequest) returns (AllocateNodeIDResponse) {}
+}
+
+// AllocateNodeIDRequest is sent by a node that wants to join the cluster.
+message AllocateNodeIDRequest {}
+
+// AllocateNodeIDResponse carries the assigned NodeID and the cluster's UUID.
+message AllocateNodeIDResponse {
+  int32 node_id = 1;
+  bytes cluster_id = 2;  // 16-byte cluster UUID
 }
 
 // PingRequest carries the sender's identity and current HLC timestamp.

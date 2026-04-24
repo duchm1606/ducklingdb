@@ -26,6 +26,7 @@ type NodeConfig struct {
 
 type Node struct {
 	id         NodeID
+	clusterID  ClusterID
 	desc       *pb.NodeDescriptor
 	engine     storage.Engine
 	clock      *hlc.Clock
@@ -39,9 +40,6 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 	if cfg.MaxOffset == 0 {
 		cfg.MaxOffset = 500 * time.Millisecond
 	}
-	if cfg.NodeID == 0 {
-		cfg.NodeID = 1
-	}
 
 	engine, err := lsm.OpenLSM(lsm.LSMOptions{Dir: cfg.DataDir})
 	if err != nil {
@@ -50,6 +48,7 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 
 	clock := hlc.NewClock(hlc.SystemWallClock(), cfg.MaxOffset)
 
+	// Bind the port before InitNode so Join can hand the actual address to the RPC.
 	srv, err := rpc.NewServer(cfg.Addr)
 	if err != nil {
 		engine.Close()
@@ -58,20 +57,38 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 
 	rpcCtx := rpc.NewContext()
 
+	// Determine NodeID and ClusterID.
+	var nodeID NodeID
+	var clusterID ClusterID
+	if cfg.NodeID != 0 {
+		// Explicit override (used in tests and single-node dev runs).
+		nodeID = cfg.NodeID
+	} else {
+		state, err := InitNode(engine, rpcCtx, cfg.JoinAddrs)
+		if err != nil {
+			srv.Stop()
+			engine.Close()
+			return nil, fmt.Errorf("init node: %w", err)
+		}
+		nodeID = state.NodeID
+		clusterID = state.ClusterID
+	}
+
 	desc := &pb.NodeDescriptor{
-		NodeId:  int32(cfg.NodeID),
+		NodeId:  int32(nodeID),
 		Address: srv.Addr(),
 	}
 
 	stopper := NewStopper()
 
-	g := gossip.New(int32(cfg.NodeID), srv.Addr(), rpcCtx, stopper)
+	g := gossip.New(int32(nodeID), srv.Addr(), rpcCtx, stopper)
 	for _, seed := range cfg.JoinAddrs {
 		g.AddPeer(seed)
 	}
 
 	n := &Node{
-		id:         cfg.NodeID,
+		id:         nodeID,
+		clusterID:  clusterID,
 		desc:       desc,
 		engine:     engine,
 		clock:      clock,
@@ -81,9 +98,12 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 		stopper:    stopper,
 	}
 
+	allocator := newNodeIDAllocator(engine, clusterID)
 	svc := &nodeServer{
-		heartbeat: rpc.NewHeartbeatService(clock, int32(cfg.NodeID)),
+		heartbeat: rpc.NewHeartbeatService(clock, int32(nodeID)),
 		batch:     kvserver.NewBatchHandler(engine, clock),
+		allocator: allocator,
+		clusterID: clusterID,
 	}
 	pb.RegisterInternalServer(srv.GRPCServer(), svc)
 	pb.RegisterGossipServiceServer(srv.GRPCServer(), g)
@@ -104,6 +124,7 @@ func (n *Node) Stop() {
 }
 
 func (n *Node) NodeID() NodeID                 { return n.id }
+func (n *Node) ClusterID() ClusterID           { return n.clusterID }
 func (n *Node) Descriptor() *pb.NodeDescriptor { return n.desc }
 func (n *Node) Engine() storage.Engine         { return n.engine }
 func (n *Node) Clock() *hlc.Clock              { return n.clock }
@@ -116,6 +137,8 @@ type nodeServer struct {
 	pb.UnimplementedInternalServer
 	heartbeat *rpc.HeartbeatService
 	batch     *kvserver.BatchHandler
+	allocator *NodeIDAllocator
+	clusterID ClusterID
 }
 
 func (s *nodeServer) Heartbeat(ctx context.Context, req *pb.PingRequest) (*pb.PingResponse, error) {
@@ -124,4 +147,15 @@ func (s *nodeServer) Heartbeat(ctx context.Context, req *pb.PingRequest) (*pb.Pi
 
 func (s *nodeServer) Batch(ctx context.Context, req *pb.BatchRequest) (*pb.BatchResponse, error) {
 	return s.batch.Batch(ctx, req)
+}
+
+func (s *nodeServer) AllocateNodeID(_ context.Context, _ *pb.AllocateNodeIDRequest) (*pb.AllocateNodeIDResponse, error) {
+	id, err := s.allocator.Allocate()
+	if err != nil {
+		return nil, err
+	}
+	return &pb.AllocateNodeIDResponse{
+		NodeId:    int32(id),
+		ClusterId: s.clusterID[:],
+	}, nil
 }

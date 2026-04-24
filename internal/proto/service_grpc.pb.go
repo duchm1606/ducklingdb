@@ -19,8 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Internal_Batch_FullMethodName     = "/ducklingdb.proto.Internal/Batch"
-	Internal_Heartbeat_FullMethodName = "/ducklingdb.proto.Internal/Heartbeat"
+	Internal_Batch_FullMethodName          = "/ducklingdb.proto.Internal/Batch"
+	Internal_Heartbeat_FullMethodName      = "/ducklingdb.proto.Internal/Heartbeat"
+	Internal_AllocateNodeID_FullMethodName = "/ducklingdb.proto.Internal/AllocateNodeID"
 )
 
 // InternalClient is the client API for Internal service.
@@ -36,6 +37,9 @@ type InternalClient interface {
 	// Heartbeat is a lightweight ping/pong used for liveness detection
 	// and clock offset measurement between peers.
 	Heartbeat(ctx context.Context, in *PingRequest, opts ...grpc.CallOption) (*PingResponse, error)
+	// AllocateNodeID is called by a joining node to obtain a unique NodeID
+	// and learn the cluster's identity. Only bootstrap nodes handle this.
+	AllocateNodeID(ctx context.Context, in *AllocateNodeIDRequest, opts ...grpc.CallOption) (*AllocateNodeIDResponse, error)
 }
 
 type internalClient struct {
@@ -66,6 +70,16 @@ func (c *internalClient) Heartbeat(ctx context.Context, in *PingRequest, opts ..
 	return out, nil
 }
 
+func (c *internalClient) AllocateNodeID(ctx context.Context, in *AllocateNodeIDRequest, opts ...grpc.CallOption) (*AllocateNodeIDResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AllocateNodeIDResponse)
+	err := c.cc.Invoke(ctx, Internal_AllocateNodeID_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // InternalServer is the server API for Internal service.
 // All implementations must embed UnimplementedInternalServer
 // for forward compatibility.
@@ -79,6 +93,9 @@ type InternalServer interface {
 	// Heartbeat is a lightweight ping/pong used for liveness detection
 	// and clock offset measurement between peers.
 	Heartbeat(context.Context, *PingRequest) (*PingResponse, error)
+	// AllocateNodeID is called by a joining node to obtain a unique NodeID
+	// and learn the cluster's identity. Only bootstrap nodes handle this.
+	AllocateNodeID(context.Context, *AllocateNodeIDRequest) (*AllocateNodeIDResponse, error)
 	mustEmbedUnimplementedInternalServer()
 }
 
@@ -94,6 +111,9 @@ func (UnimplementedInternalServer) Batch(context.Context, *BatchRequest) (*Batch
 }
 func (UnimplementedInternalServer) Heartbeat(context.Context, *PingRequest) (*PingResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Heartbeat not implemented")
+}
+func (UnimplementedInternalServer) AllocateNodeID(context.Context, *AllocateNodeIDRequest) (*AllocateNodeIDResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AllocateNodeID not implemented")
 }
 func (UnimplementedInternalServer) mustEmbedUnimplementedInternalServer() {}
 func (UnimplementedInternalServer) testEmbeddedByValue()                  {}
@@ -152,6 +172,24 @@ func _Internal_Heartbeat_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Internal_AllocateNodeID_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AllocateNodeIDRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InternalServer).AllocateNodeID(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Internal_AllocateNodeID_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InternalServer).AllocateNodeID(ctx, req.(*AllocateNodeIDRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Internal_ServiceDesc is the grpc.ServiceDesc for Internal service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -166,6 +204,10 @@ var Internal_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Heartbeat",
 			Handler:    _Internal_Heartbeat_Handler,
+		},
+		{
+			MethodName: "AllocateNodeID",
+			Handler:    _Internal_AllocateNodeID_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

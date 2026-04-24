@@ -21,6 +21,96 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// AllocateNodeIDRequest is sent by a node that wants to join the cluster.
+type AllocateNodeIDRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AllocateNodeIDRequest) Reset() {
+	*x = AllocateNodeIDRequest{}
+	mi := &file_internal_proto_service_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AllocateNodeIDRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AllocateNodeIDRequest) ProtoMessage() {}
+
+func (x *AllocateNodeIDRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_proto_service_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AllocateNodeIDRequest.ProtoReflect.Descriptor instead.
+func (*AllocateNodeIDRequest) Descriptor() ([]byte, []int) {
+	return file_internal_proto_service_proto_rawDescGZIP(), []int{0}
+}
+
+// AllocateNodeIDResponse carries the assigned NodeID and the cluster's UUID.
+type AllocateNodeIDResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeId        int32                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	ClusterId     []byte                 `protobuf:"bytes,2,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"` // 16-byte cluster UUID
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AllocateNodeIDResponse) Reset() {
+	*x = AllocateNodeIDResponse{}
+	mi := &file_internal_proto_service_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AllocateNodeIDResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AllocateNodeIDResponse) ProtoMessage() {}
+
+func (x *AllocateNodeIDResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_proto_service_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AllocateNodeIDResponse.ProtoReflect.Descriptor instead.
+func (*AllocateNodeIDResponse) Descriptor() ([]byte, []int) {
+	return file_internal_proto_service_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *AllocateNodeIDResponse) GetNodeId() int32 {
+	if x != nil {
+		return x.NodeId
+	}
+	return 0
+}
+
+func (x *AllocateNodeIDResponse) GetClusterId() []byte {
+	if x != nil {
+		return x.ClusterId
+	}
+	return nil
+}
+
 // PingRequest carries the sender's identity and current HLC timestamp.
 // The receiver uses the timestamp to measure clock offset.
 type PingRequest struct {
@@ -33,7 +123,7 @@ type PingRequest struct {
 
 func (x *PingRequest) Reset() {
 	*x = PingRequest{}
-	mi := &file_internal_proto_service_proto_msgTypes[0]
+	mi := &file_internal_proto_service_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -45,7 +135,7 @@ func (x *PingRequest) String() string {
 func (*PingRequest) ProtoMessage() {}
 
 func (x *PingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_proto_service_proto_msgTypes[0]
+	mi := &file_internal_proto_service_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -58,7 +148,7 @@ func (x *PingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PingRequest.ProtoReflect.Descriptor instead.
 func (*PingRequest) Descriptor() ([]byte, []int) {
-	return file_internal_proto_service_proto_rawDescGZIP(), []int{0}
+	return file_internal_proto_service_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *PingRequest) GetNodeId() int32 {
@@ -87,7 +177,7 @@ type PingResponse struct {
 
 func (x *PingResponse) Reset() {
 	*x = PingResponse{}
-	mi := &file_internal_proto_service_proto_msgTypes[1]
+	mi := &file_internal_proto_service_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -99,7 +189,7 @@ func (x *PingResponse) String() string {
 func (*PingResponse) ProtoMessage() {}
 
 func (x *PingResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_proto_service_proto_msgTypes[1]
+	mi := &file_internal_proto_service_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -112,7 +202,7 @@ func (x *PingResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PingResponse.ProtoReflect.Descriptor instead.
 func (*PingResponse) Descriptor() ([]byte, []int) {
-	return file_internal_proto_service_proto_rawDescGZIP(), []int{1}
+	return file_internal_proto_service_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *PingResponse) GetNodeId() int32 {
@@ -143,7 +233,7 @@ type Info struct {
 
 func (x *Info) Reset() {
 	*x = Info{}
-	mi := &file_internal_proto_service_proto_msgTypes[2]
+	mi := &file_internal_proto_service_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -155,7 +245,7 @@ func (x *Info) String() string {
 func (*Info) ProtoMessage() {}
 
 func (x *Info) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_proto_service_proto_msgTypes[2]
+	mi := &file_internal_proto_service_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -168,7 +258,7 @@ func (x *Info) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Info.ProtoReflect.Descriptor instead.
 func (*Info) Descriptor() ([]byte, []int) {
-	return file_internal_proto_service_proto_rawDescGZIP(), []int{2}
+	return file_internal_proto_service_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *Info) GetKey() string {
@@ -221,7 +311,7 @@ type GossipMessage struct {
 
 func (x *GossipMessage) Reset() {
 	*x = GossipMessage{}
-	mi := &file_internal_proto_service_proto_msgTypes[3]
+	mi := &file_internal_proto_service_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -233,7 +323,7 @@ func (x *GossipMessage) String() string {
 func (*GossipMessage) ProtoMessage() {}
 
 func (x *GossipMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_proto_service_proto_msgTypes[3]
+	mi := &file_internal_proto_service_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -246,7 +336,7 @@ func (x *GossipMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GossipMessage.ProtoReflect.Descriptor instead.
 func (*GossipMessage) Descriptor() ([]byte, []int) {
-	return file_internal_proto_service_proto_rawDescGZIP(), []int{3}
+	return file_internal_proto_service_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *GossipMessage) GetNodeId() int32 {
@@ -281,7 +371,12 @@ var File_internal_proto_service_proto protoreflect.FileDescriptor
 
 const file_internal_proto_service_proto_rawDesc = "" +
 	"\n" +
-	"\x1cinternal/proto/service.proto\x12\x10ducklingdb.proto\x1a\x18internal/proto/api.proto\x1a\x19internal/proto/data.proto\"d\n" +
+	"\x1cinternal/proto/service.proto\x12\x10ducklingdb.proto\x1a\x18internal/proto/api.proto\x1a\x19internal/proto/data.proto\"\x17\n" +
+	"\x15AllocateNodeIDRequest\"P\n" +
+	"\x16AllocateNodeIDResponse\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\x05R\x06nodeId\x12\x1d\n" +
+	"\n" +
+	"cluster_id\x18\x02 \x01(\fR\tclusterId\"d\n" +
 	"\vPingRequest\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x05R\x06nodeId\x12<\n" +
 	"\vserver_time\x18\x02 \x01(\v2\x1b.ducklingdb.proto.TimestampR\n" +
@@ -310,10 +405,11 @@ const file_internal_proto_service_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2\x16.ducklingdb.proto.InfoR\x05value:\x028\x01\x1a<\n" +
 	"\x0eHighWaterEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x012\xa4\x01\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x012\x8b\x02\n" +
 	"\bInternal\x12J\n" +
 	"\x05Batch\x12\x1e.ducklingdb.proto.BatchRequest\x1a\x1f.ducklingdb.proto.BatchResponse\"\x00\x12L\n" +
-	"\tHeartbeat\x12\x1d.ducklingdb.proto.PingRequest\x1a\x1e.ducklingdb.proto.PingResponse\"\x002a\n" +
+	"\tHeartbeat\x12\x1d.ducklingdb.proto.PingRequest\x1a\x1e.ducklingdb.proto.PingResponse\"\x00\x12e\n" +
+	"\x0eAllocateNodeID\x12'.ducklingdb.proto.AllocateNodeIDRequest\x1a(.ducklingdb.proto.AllocateNodeIDResponse\"\x002a\n" +
 	"\rGossipService\x12P\n" +
 	"\x06Gossip\x12\x1f.ducklingdb.proto.GossipMessage\x1a\x1f.ducklingdb.proto.GossipMessage\"\x00(\x010\x01B0Z.github.com/duchm1606/ducklingdb/internal/protob\x06proto3"
 
@@ -329,35 +425,39 @@ func file_internal_proto_service_proto_rawDescGZIP() []byte {
 	return file_internal_proto_service_proto_rawDescData
 }
 
-var file_internal_proto_service_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_internal_proto_service_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_internal_proto_service_proto_goTypes = []any{
-	(*PingRequest)(nil),   // 0: ducklingdb.proto.PingRequest
-	(*PingResponse)(nil),  // 1: ducklingdb.proto.PingResponse
-	(*Info)(nil),          // 2: ducklingdb.proto.Info
-	(*GossipMessage)(nil), // 3: ducklingdb.proto.GossipMessage
-	nil,                   // 4: ducklingdb.proto.GossipMessage.DeltaEntry
-	nil,                   // 5: ducklingdb.proto.GossipMessage.HighWaterEntry
-	(*Timestamp)(nil),     // 6: ducklingdb.proto.Timestamp
-	(*BatchRequest)(nil),  // 7: ducklingdb.proto.BatchRequest
-	(*BatchResponse)(nil), // 8: ducklingdb.proto.BatchResponse
+	(*AllocateNodeIDRequest)(nil),  // 0: ducklingdb.proto.AllocateNodeIDRequest
+	(*AllocateNodeIDResponse)(nil), // 1: ducklingdb.proto.AllocateNodeIDResponse
+	(*PingRequest)(nil),            // 2: ducklingdb.proto.PingRequest
+	(*PingResponse)(nil),           // 3: ducklingdb.proto.PingResponse
+	(*Info)(nil),                   // 4: ducklingdb.proto.Info
+	(*GossipMessage)(nil),          // 5: ducklingdb.proto.GossipMessage
+	nil,                            // 6: ducklingdb.proto.GossipMessage.DeltaEntry
+	nil,                            // 7: ducklingdb.proto.GossipMessage.HighWaterEntry
+	(*Timestamp)(nil),              // 8: ducklingdb.proto.Timestamp
+	(*BatchRequest)(nil),           // 9: ducklingdb.proto.BatchRequest
+	(*BatchResponse)(nil),          // 10: ducklingdb.proto.BatchResponse
 }
 var file_internal_proto_service_proto_depIdxs = []int32{
-	6, // 0: ducklingdb.proto.PingRequest.server_time:type_name -> ducklingdb.proto.Timestamp
-	6, // 1: ducklingdb.proto.PingResponse.server_time:type_name -> ducklingdb.proto.Timestamp
-	4, // 2: ducklingdb.proto.GossipMessage.delta:type_name -> ducklingdb.proto.GossipMessage.DeltaEntry
-	5, // 3: ducklingdb.proto.GossipMessage.high_water:type_name -> ducklingdb.proto.GossipMessage.HighWaterEntry
-	2, // 4: ducklingdb.proto.GossipMessage.DeltaEntry.value:type_name -> ducklingdb.proto.Info
-	7, // 5: ducklingdb.proto.Internal.Batch:input_type -> ducklingdb.proto.BatchRequest
-	0, // 6: ducklingdb.proto.Internal.Heartbeat:input_type -> ducklingdb.proto.PingRequest
-	3, // 7: ducklingdb.proto.GossipService.Gossip:input_type -> ducklingdb.proto.GossipMessage
-	8, // 8: ducklingdb.proto.Internal.Batch:output_type -> ducklingdb.proto.BatchResponse
-	1, // 9: ducklingdb.proto.Internal.Heartbeat:output_type -> ducklingdb.proto.PingResponse
-	3, // 10: ducklingdb.proto.GossipService.Gossip:output_type -> ducklingdb.proto.GossipMessage
-	8, // [8:11] is the sub-list for method output_type
-	5, // [5:8] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	8,  // 0: ducklingdb.proto.PingRequest.server_time:type_name -> ducklingdb.proto.Timestamp
+	8,  // 1: ducklingdb.proto.PingResponse.server_time:type_name -> ducklingdb.proto.Timestamp
+	6,  // 2: ducklingdb.proto.GossipMessage.delta:type_name -> ducklingdb.proto.GossipMessage.DeltaEntry
+	7,  // 3: ducklingdb.proto.GossipMessage.high_water:type_name -> ducklingdb.proto.GossipMessage.HighWaterEntry
+	4,  // 4: ducklingdb.proto.GossipMessage.DeltaEntry.value:type_name -> ducklingdb.proto.Info
+	9,  // 5: ducklingdb.proto.Internal.Batch:input_type -> ducklingdb.proto.BatchRequest
+	2,  // 6: ducklingdb.proto.Internal.Heartbeat:input_type -> ducklingdb.proto.PingRequest
+	0,  // 7: ducklingdb.proto.Internal.AllocateNodeID:input_type -> ducklingdb.proto.AllocateNodeIDRequest
+	5,  // 8: ducklingdb.proto.GossipService.Gossip:input_type -> ducklingdb.proto.GossipMessage
+	10, // 9: ducklingdb.proto.Internal.Batch:output_type -> ducklingdb.proto.BatchResponse
+	3,  // 10: ducklingdb.proto.Internal.Heartbeat:output_type -> ducklingdb.proto.PingResponse
+	1,  // 11: ducklingdb.proto.Internal.AllocateNodeID:output_type -> ducklingdb.proto.AllocateNodeIDResponse
+	5,  // 12: ducklingdb.proto.GossipService.Gossip:output_type -> ducklingdb.proto.GossipMessage
+	9,  // [9:13] is the sub-list for method output_type
+	5,  // [5:9] is the sub-list for method input_type
+	5,  // [5:5] is the sub-list for extension type_name
+	5,  // [5:5] is the sub-list for extension extendee
+	0,  // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_internal_proto_service_proto_init() }
@@ -373,7 +473,7 @@ func file_internal_proto_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_proto_service_proto_rawDesc), len(file_internal_proto_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   2,
 		},
