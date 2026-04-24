@@ -8,6 +8,7 @@ proto:
 		internal/proto/data.proto \
 		internal/proto/api.proto \
 		internal/proto/metadata.proto \
+		internal/proto/raft.proto \
 		internal/proto/service.proto
 
 build:

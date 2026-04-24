@@ -371,7 +371,7 @@ var File_internal_proto_service_proto protoreflect.FileDescriptor
 
 const file_internal_proto_service_proto_rawDesc = "" +
 	"\n" +
-	"\x1cinternal/proto/service.proto\x12\x10ducklingdb.proto\x1a\x18internal/proto/api.proto\x1a\x19internal/proto/data.proto\"\x17\n" +
+	"\x1cinternal/proto/service.proto\x12\x10ducklingdb.proto\x1a\x18internal/proto/api.proto\x1a\x19internal/proto/data.proto\x1a\x19internal/proto/raft.proto\"\x17\n" +
 	"\x15AllocateNodeIDRequest\"P\n" +
 	"\x16AllocateNodeIDResponse\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x05R\x06nodeId\x12\x1d\n" +
@@ -411,7 +411,9 @@ const file_internal_proto_service_proto_rawDesc = "" +
 	"\tHeartbeat\x12\x1d.ducklingdb.proto.PingRequest\x1a\x1e.ducklingdb.proto.PingResponse\"\x00\x12e\n" +
 	"\x0eAllocateNodeID\x12'.ducklingdb.proto.AllocateNodeIDRequest\x1a(.ducklingdb.proto.AllocateNodeIDResponse\"\x002a\n" +
 	"\rGossipService\x12P\n" +
-	"\x06Gossip\x12\x1f.ducklingdb.proto.GossipMessage\x1a\x1f.ducklingdb.proto.GossipMessage\"\x00(\x010\x01B0Z.github.com/duchm1606/ducklingdb/internal/protob\x06proto3"
+	"\x06Gossip\x12\x1f.ducklingdb.proto.GossipMessage\x1a\x1f.ducklingdb.proto.GossipMessage\"\x00(\x010\x012]\n" +
+	"\vRaftService\x12N\n" +
+	"\x04Step\x12\x1d.ducklingdb.proto.RaftMessage\x1a%.ducklingdb.proto.RaftMessageResponse\"\x00B0Z.github.com/duchm1606/ducklingdb/internal/protob\x06proto3"
 
 var (
 	file_internal_proto_service_proto_rawDescOnce sync.Once
@@ -437,7 +439,9 @@ var file_internal_proto_service_proto_goTypes = []any{
 	nil,                            // 7: ducklingdb.proto.GossipMessage.HighWaterEntry
 	(*Timestamp)(nil),              // 8: ducklingdb.proto.Timestamp
 	(*BatchRequest)(nil),           // 9: ducklingdb.proto.BatchRequest
-	(*BatchResponse)(nil),          // 10: ducklingdb.proto.BatchResponse
+	(*RaftMessage)(nil),            // 10: ducklingdb.proto.RaftMessage
+	(*BatchResponse)(nil),          // 11: ducklingdb.proto.BatchResponse
+	(*RaftMessageResponse)(nil),    // 12: ducklingdb.proto.RaftMessageResponse
 }
 var file_internal_proto_service_proto_depIdxs = []int32{
 	8,  // 0: ducklingdb.proto.PingRequest.server_time:type_name -> ducklingdb.proto.Timestamp
@@ -449,12 +453,14 @@ var file_internal_proto_service_proto_depIdxs = []int32{
 	2,  // 6: ducklingdb.proto.Internal.Heartbeat:input_type -> ducklingdb.proto.PingRequest
 	0,  // 7: ducklingdb.proto.Internal.AllocateNodeID:input_type -> ducklingdb.proto.AllocateNodeIDRequest
 	5,  // 8: ducklingdb.proto.GossipService.Gossip:input_type -> ducklingdb.proto.GossipMessage
-	10, // 9: ducklingdb.proto.Internal.Batch:output_type -> ducklingdb.proto.BatchResponse
-	3,  // 10: ducklingdb.proto.Internal.Heartbeat:output_type -> ducklingdb.proto.PingResponse
-	1,  // 11: ducklingdb.proto.Internal.AllocateNodeID:output_type -> ducklingdb.proto.AllocateNodeIDResponse
-	5,  // 12: ducklingdb.proto.GossipService.Gossip:output_type -> ducklingdb.proto.GossipMessage
-	9,  // [9:13] is the sub-list for method output_type
-	5,  // [5:9] is the sub-list for method input_type
+	10, // 9: ducklingdb.proto.RaftService.Step:input_type -> ducklingdb.proto.RaftMessage
+	11, // 10: ducklingdb.proto.Internal.Batch:output_type -> ducklingdb.proto.BatchResponse
+	3,  // 11: ducklingdb.proto.Internal.Heartbeat:output_type -> ducklingdb.proto.PingResponse
+	1,  // 12: ducklingdb.proto.Internal.AllocateNodeID:output_type -> ducklingdb.proto.AllocateNodeIDResponse
+	5,  // 13: ducklingdb.proto.GossipService.Gossip:output_type -> ducklingdb.proto.GossipMessage
+	12, // 14: ducklingdb.proto.RaftService.Step:output_type -> ducklingdb.proto.RaftMessageResponse
+	10, // [10:15] is the sub-list for method output_type
+	5,  // [5:10] is the sub-list for method input_type
 	5,  // [5:5] is the sub-list for extension type_name
 	5,  // [5:5] is the sub-list for extension extendee
 	0,  // [0:5] is the sub-list for field type_name
@@ -467,6 +473,7 @@ func file_internal_proto_service_proto_init() {
 	}
 	file_internal_proto_api_proto_init()
 	file_internal_proto_data_proto_init()
+	file_internal_proto_raft_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
@@ -475,7 +482,7 @@ func file_internal_proto_service_proto_init() {
 			NumEnums:      0,
 			NumMessages:   8,
 			NumExtensions: 0,
-			NumServices:   2,
+			NumServices:   3,
 		},
 		GoTypes:           file_internal_proto_service_proto_goTypes,
 		DependencyIndexes: file_internal_proto_service_proto_depIdxs,

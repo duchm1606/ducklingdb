@@ -6,6 +6,7 @@ option go_package = "github.com/duchm1606/ducklingdb/internal/proto";
 
 import "internal/proto/api.proto";
 import "internal/proto/data.proto";
+import "internal/proto/raft.proto";
 
 // Internal is the node-to-node RPC service. Every DucklingDB node
 // exposes this service on its gRPC port. It handles both KV operations
@@ -74,4 +75,9 @@ service GossipService {
   // Gossip is a long-lived bidirectional stream. Each round, both sides
   // send a GossipMessage containing their delta and high-water stamps.
   rpc Gossip(stream GossipMessage) returns (stream GossipMessage) {}
+}
+
+// RaftService receives Raft protocol messages from peer replicas.
+service RaftService {
+  rpc Step(RaftMessage) returns (RaftMessageResponse) {}
 }
