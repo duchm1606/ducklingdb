@@ -5,11 +5,12 @@ import (
 	"testing"
 
 	"github.com/duchm1606/ducklingdb/internal/sql/executor"
+	"github.com/duchm1606/ducklingdb/internal/storage"
 	"github.com/duchm1606/ducklingdb/internal/storage/lsm"
 	"github.com/duchm1606/ducklingdb/internal/util/hlc"
 )
 
-func newExec(t *testing.T) *executor.Executor {
+func newTestEngine(t *testing.T) (storage.Engine, *hlc.Clock) {
 	t.Helper()
 	eng, err := lsm.OpenLSM(lsm.LSMOptions{Dir: t.TempDir()})
 	if err != nil {
@@ -17,6 +18,12 @@ func newExec(t *testing.T) *executor.Executor {
 	}
 	t.Cleanup(func() { eng.Close() })
 	clock := hlc.NewClock(hlc.SystemWallClock(), 0)
+	return eng, clock
+}
+
+func newExec(t *testing.T) *executor.Executor {
+	t.Helper()
+	eng, clock := newTestEngine(t)
 	return executor.New(eng, clock)
 }
 
@@ -112,5 +119,23 @@ func TestWhereNonPKError(t *testing.T) {
 	_, err := ex.Execute("SELECT * FROM users WHERE name = 'alice'")
 	if err == nil {
 		t.Fatal("expected error for non-PK WHERE")
+	}
+	if !strings.Contains(err.Error(), "WHERE only supported on primary key column") {
+		t.Fatalf("expected WHERE error message, got: %v", err)
+	}
+}
+
+func TestCreateTableInvalidPKType(t *testing.T) {
+	eng, clock := newTestEngine(t)
+	ex := executor.New(eng, clock)
+
+	_, err := ex.Execute("CREATE TABLE t (id FLOAT PRIMARY KEY, name TEXT)")
+	if err == nil {
+		t.Fatal("expected error for FLOAT primary key, got nil")
+	}
+
+	_, err = ex.Execute("CREATE TABLE t2 (flag BOOL PRIMARY KEY)")
+	if err == nil {
+		t.Fatal("expected error for BOOL primary key, got nil")
 	}
 }

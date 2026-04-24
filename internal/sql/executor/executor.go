@@ -265,8 +265,11 @@ func buildResult(schema *catalog.TableSchema, kvPairs []mvcc.KeyValue) (*Result,
 
 func whereExprToPKValue(expr tree.Expr, schema *catalog.TableSchema) (any, error) {
 	cmp, ok := expr.(*tree.ComparisonExpr)
-	if !ok || cmp.Operator != tree.EQ {
-		return nil, fmt.Errorf("WHERE only supported on primary key column with = operator")
+	if !ok {
+		return nil, fmt.Errorf("WHERE only supported on primary key column")
+	}
+	if cmp.Operator != tree.EQ {
+		return nil, fmt.Errorf("WHERE only supported on primary key column")
 	}
 	colName, ok := cmp.Left.(*tree.UnresolvedName)
 	if !ok {
