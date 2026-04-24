@@ -26,7 +26,7 @@ func encodeRowKey(tableName string, pkType catalog.ColumnType, pkVal any) []byte
 func tableKeyRange(tableName string) (start, end []byte) {
 	prefix := "/" + tableName + "/"
 	start = []byte(prefix)
-	end = append([]byte(prefix), 0xff)
+	end = append([]byte(prefix), 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff)
 	return
 }
 

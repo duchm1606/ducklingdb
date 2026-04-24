@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -154,7 +155,10 @@ func (e *Executor) execSelect(s *tree.Select) (*Result, error) {
 		pk := schema.PrimaryKeyColumn()
 		key := encodeRowKey(tableName, pk.Type, pkVal)
 		val, err := mvcc.MVCCGet(e.engine, key, ts, opts)
-		if err == nil && val != nil {
+		if err != nil && !errors.Is(err, storage.ErrKeyNotFound) {
+			return nil, err
+		}
+		if val != nil {
 			kvPairs = []mvcc.KeyValue{{Key: key, Value: val}}
 		}
 	} else {
@@ -184,8 +188,11 @@ func (e *Executor) execUpdate(s *tree.Update) (*Result, error) {
 	key := encodeRowKey(tableName, pk.Type, pkVal)
 	ts := e.clock.Now()
 	existing, err := mvcc.MVCCGet(e.engine, key, ts, mvcc.ReadOptions{})
-	if err != nil || existing == nil {
+	if errors.Is(err, storage.ErrKeyNotFound) || existing == nil {
 		return &Result{RowsAffected: 0, Message: "UPDATE 0"}, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 	row, err := decodeRowValue(existing)
 	if err != nil {
@@ -226,8 +233,15 @@ func (e *Executor) execDelete(s *tree.Delete) (*Result, error) {
 	pk := schema.PrimaryKeyColumn()
 	key := encodeRowKey(tableName, pk.Type, pkVal)
 	ts := e.clock.Now()
-	if err := mvcc.MVCCDelete(e.engine, key, ts, nil); err != nil {
+	existing, err := mvcc.MVCCGet(e.engine, key, ts, mvcc.ReadOptions{})
+	if errors.Is(err, storage.ErrKeyNotFound) || existing == nil {
 		return &Result{RowsAffected: 0, Message: "DELETE 0"}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := mvcc.MVCCDelete(e.engine, key, ts, nil); err != nil {
+		return nil, err
 	}
 	return &Result{RowsAffected: 1, Message: "DELETE 1"}, nil
 }
