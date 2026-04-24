@@ -170,12 +170,11 @@ func TestLeaderAppendsNoOpOnElection(t *testing.T) {
 }
 
 func TestFollowerRejectsConflictingEntries(t *testing.T) {
-	nt := newTestNetwork(1, 2)
-	// Force node 1 to be leader at term 1
-	for i := 0; i < 25; i++ {
+	nt := newTestNetwork(1, 2, 3)
+	// Elect a leader with enough ticks
+	for i := 0; i < 50; i++ {
 		nt.tickAll()
 	}
-	// Send a MsgApp with wrong prevLogTerm to follower
 	var followerID uint64
 	for id, n := range nt.nodes {
 		if n.state == StateFollower {
@@ -184,7 +183,7 @@ func TestFollowerRejectsConflictingEntries(t *testing.T) {
 		}
 	}
 	if followerID == 0 {
-		t.Skip("could not find follower in 2-node network")
+		t.Fatal("no follower found in 3-node network after 50 ticks")
 	}
 	// Step a bad AppendEntries into the follower
 	nt.nodes[followerID].Step(Message{

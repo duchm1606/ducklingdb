@@ -273,6 +273,7 @@ func (rn *RawNode) Step(m Message) error {
 		rn.log.append(entries...)
 		rn.matchIndex[rn.id] = rn.log.lastIndex()
 		rn.bcastAppend()
+		rn.maybeAdvanceCommit()
 
 	case MsgApp:
 		if m.Term < rn.term {
