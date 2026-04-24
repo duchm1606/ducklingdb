@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -15,6 +16,9 @@ import (
 	pb "github.com/duchm1606/ducklingdb/internal/proto"
 	"github.com/duchm1606/ducklingdb/internal/rpc"
 	"github.com/duchm1606/ducklingdb/internal/server"
+	"github.com/duchm1606/ducklingdb/internal/sql/executor"
+	"github.com/duchm1606/ducklingdb/internal/storage/lsm"
+	"github.com/duchm1606/ducklingdb/internal/util/hlc"
 )
 
 func main() {
@@ -27,6 +31,8 @@ func main() {
 		runStart(os.Args[2:])
 	case "status":
 		runStatus(os.Args[2:])
+	case "repl":
+		runRepl(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		os.Exit(1)
@@ -152,4 +158,98 @@ func runStatus(args []string) {
 	fmt.Printf("server_time: wall=%d logical=%d\n",
 		resp.ServerTime.WallTime, resp.ServerTime.Logical)
 	fmt.Printf("addr:        %s\n", *addr)
+}
+
+// ── repl ─────────────────────────────────────────────────────────────────────
+
+func runRepl(args []string) {
+	fs := flag.NewFlagSet("repl", flag.ExitOnError)
+	dataDir := fs.String("data", "", "data directory (required)")
+	fs.Parse(args)
+
+	if *dataDir == "" {
+		fmt.Fprintf(os.Stderr, "error: --data is required\n")
+		os.Exit(1)
+	}
+
+	engine, err := lsm.OpenLSM(lsm.LSMOptions{Dir: *dataDir})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: open engine: %v\n", err)
+		os.Exit(1)
+	}
+
+	clock := hlc.NewClock(hlc.SystemWallClock(), 500*time.Millisecond)
+	exec := executor.New(engine, clock)
+
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		fmt.Fprint(os.Stdout, "duck> ")
+		if !scanner.Scan() {
+			break
+		}
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if line == `\q` || line == `\quit` {
+			break
+		}
+		res, err := exec.Execute(line)
+		if err != nil {
+			fmt.Fprintf(os.Stdout, "ERROR: %v\n", err)
+			continue
+		}
+		if len(res.Columns) > 0 {
+			printTable(res)
+		} else {
+			fmt.Fprintln(os.Stdout, res.Message)
+		}
+	}
+}
+
+// printTable renders a Result with column headers as an ASCII table.
+func printTable(res *executor.Result) {
+	// Compute column widths — at least the header width.
+	widths := make([]int, len(res.Columns))
+	for i, col := range res.Columns {
+		widths[i] = len(col)
+	}
+	for _, row := range res.Rows {
+		for i, val := range row {
+			if len(val) > widths[i] {
+				widths[i] = len(val)
+			}
+		}
+	}
+
+	// Header row.
+	printRow(res.Columns, widths)
+
+	// Separator.
+	parts := make([]string, len(widths))
+	for i, w := range widths {
+		parts[i] = strings.Repeat("-", w+2)
+	}
+	fmt.Fprintln(os.Stdout, strings.Join(parts, "+"))
+
+	// Data rows.
+	for _, row := range res.Rows {
+		printRow(row, widths)
+	}
+
+	// Row count.
+	n := len(res.Rows)
+	if n == 1 {
+		fmt.Fprintln(os.Stdout, "(1 row)")
+	} else {
+		fmt.Fprintf(os.Stdout, "(%d rows)\n", n)
+	}
+}
+
+func printRow(vals []string, widths []int) {
+	parts := make([]string, len(vals))
+	for i, v := range vals {
+		parts[i] = fmt.Sprintf(" %-*s ", widths[i], v)
+	}
+	fmt.Fprintln(os.Stdout, strings.Join(parts, "|"))
 }
