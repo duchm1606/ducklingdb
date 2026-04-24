@@ -261,19 +261,74 @@ func (rn *RawNode) Step(m Message) error {
 			rn.becomeLeader()
 		}
 
-	case MsgApp:
-		if m.Term >= rn.term {
-			rn.electionElapsed = 0
-			rn.leadID = m.From
-			rn.log.commitTo(m.Commit)
+	case MsgProp:
+		if rn.state != StateLeader {
+			return nil // ignore proposals on non-leaders
 		}
-		rn.send(Message{Type: MsgAppResp, To: m.From, Term: rn.term})
+		lastIdx := rn.log.lastIndex()
+		entries := make([]Entry, len(m.Entries))
+		for i, e := range m.Entries {
+			entries[i] = Entry{Term: rn.term, Index: lastIdx + uint64(i) + 1, Data: e.Data}
+		}
+		rn.log.append(entries...)
+		rn.matchIndex[rn.id] = rn.log.lastIndex()
+		rn.bcastAppend()
+
+	case MsgApp:
+		if m.Term < rn.term {
+			rn.send(Message{Type: MsgAppResp, To: m.From, Term: rn.term, Reject: true,
+				RejectHint: rn.log.lastIndex()})
+			return nil
+		}
+		rn.electionElapsed = 0
+		rn.leadID = m.From
+		// Check prevLog consistency
+		if m.Index > 0 {
+			t, err := rn.log.term(m.Index)
+			if err != nil || t != m.LogTerm {
+				rn.send(Message{Type: MsgAppResp, To: m.From, Term: rn.term,
+					Reject: true, RejectHint: rn.log.lastIndex()})
+				return nil
+			}
+		}
+		// Append entries, truncating conflicts
+		if len(m.Entries) > 0 {
+			rn.log.append(m.Entries...)
+		}
+		// Advance commit with upper-bound guard
+		if m.Commit > rn.log.committed {
+			rn.log.commitTo(min64(m.Commit, rn.log.lastIndex()))
+		}
+		rn.send(Message{Type: MsgAppResp, To: m.From, Term: rn.term,
+			Index: rn.log.lastIndex()})
+
+	case MsgAppResp:
+		if rn.state != StateLeader {
+			return nil
+		}
+		if m.Reject {
+			// Back up nextIndex using the hint
+			if m.RejectHint < rn.nextIndex[m.From] {
+				rn.nextIndex[m.From] = m.RejectHint + 1
+			} else {
+				if rn.nextIndex[m.From] > 1 {
+					rn.nextIndex[m.From]--
+				}
+			}
+			rn.sendAppend(m.From)
+		} else {
+			if m.Index > rn.matchIndex[m.From] {
+				rn.matchIndex[m.From] = m.Index
+				rn.nextIndex[m.From] = m.Index + 1
+			}
+			rn.maybeAdvanceCommit()
+		}
 
 	case MsgHeartbeat:
 		if m.Term >= rn.term {
 			rn.electionElapsed = 0
 			rn.leadID = m.From
-			rn.log.commitTo(m.Commit)
+			rn.log.commitTo(min64(m.Commit, rn.log.lastIndex()))
 		}
 		rn.send(Message{Type: MsgHeartbeatResp, To: m.From, Term: rn.term})
 
@@ -361,6 +416,13 @@ func (rn *RawNode) Advance(rd Ready) {
 		rn.log.appliedTo(last.Index)
 	}
 	rn.msgs = nil
+}
+
+func min64(a, b uint64) uint64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // maybeAdvanceCommit tries to advance the commit index based on matchIndex quorum.
