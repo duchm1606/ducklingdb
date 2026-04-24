@@ -70,6 +70,11 @@ func New(
 	return nl
 }
 
+// SetThreshold overrides the liveness expiration window. Must be called before Start.
+func (nl *NodeLiveness) SetThreshold(d time.Duration) {
+	nl.livenessThreshold = d
+}
+
 // Start begins the heartbeat loop. The first heartbeat fires immediately.
 func (nl *NodeLiveness) Start() {
 	nl.stopper.RunWorker(func() {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/duchm1606/ducklingdb/internal/gossip"
 	"github.com/duchm1606/ducklingdb/internal/kv/kvserver"
+	"github.com/duchm1606/ducklingdb/internal/kv/kvserver/liveness"
 	pb "github.com/duchm1606/ducklingdb/internal/proto"
 	"github.com/duchm1606/ducklingdb/internal/rpc"
 	"github.com/duchm1606/ducklingdb/internal/storage"
@@ -14,31 +15,42 @@ import (
 	"github.com/duchm1606/ducklingdb/internal/util/hlc"
 )
 
+const defaultHeartbeatWorkerInterval = 1 * time.Second
+
 type NodeID int32
 
 type NodeConfig struct {
-	Addr      string
-	DataDir   string
-	JoinAddrs []string
-	MaxOffset time.Duration
-	NodeID    NodeID
+	Addr               string
+	DataDir            string
+	JoinAddrs          []string
+	MaxOffset          time.Duration
+	NodeID             NodeID
+	LivenessThreshold  time.Duration // 0 → default (5s)
+	HeartbeatInterval  time.Duration // 0 → default (1s)
 }
 
 type Node struct {
-	id         NodeID
-	clusterID  ClusterID
-	desc       *pb.NodeDescriptor
-	engine     storage.Engine
-	clock      *hlc.Clock
-	rpcServer  *rpc.Server
-	rpcContext *rpc.Context
-	gossip     *gossip.Gossip
-	stopper    *Stopper
+	id           NodeID
+	clusterID    ClusterID
+	desc         *pb.NodeDescriptor
+	engine       storage.Engine
+	clock        *hlc.Clock
+	rpcServer    *rpc.Server
+	rpcContext   *rpc.Context
+	gossip       *gossip.Gossip
+	liveness     *liveness.NodeLiveness
+	clockMonitor *rpc.RemoteClockMonitor
+	stopper      *Stopper
+
+	heartbeatInterval time.Duration
 }
 
 func NewNode(cfg NodeConfig) (*Node, error) {
 	if cfg.MaxOffset == 0 {
 		cfg.MaxOffset = 500 * time.Millisecond
+	}
+	if cfg.HeartbeatInterval == 0 {
+		cfg.HeartbeatInterval = defaultHeartbeatWorkerInterval
 	}
 
 	engine, err := lsm.OpenLSM(lsm.LSMOptions{Dir: cfg.DataDir})
@@ -48,7 +60,6 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 
 	clock := hlc.NewClock(hlc.SystemWallClock(), cfg.MaxOffset)
 
-	// Bind the port before InitNode so Join can hand the actual address to the RPC.
 	srv, err := rpc.NewServer(cfg.Addr)
 	if err != nil {
 		engine.Close()
@@ -57,11 +68,9 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 
 	rpcCtx := rpc.NewContext()
 
-	// Determine NodeID and ClusterID.
 	var nodeID NodeID
 	var clusterID ClusterID
 	if cfg.NodeID != 0 {
-		// Explicit override (used in tests and single-node dev runs).
 		nodeID = cfg.NodeID
 	} else {
 		state, err := InitNode(engine, rpcCtx, cfg.JoinAddrs)
@@ -86,16 +95,26 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 		g.AddPeer(seed)
 	}
 
+	clockMonitor := rpc.NewRemoteClockMonitor(cfg.MaxOffset)
+
+	nl := liveness.New(int32(nodeID), engine, clock, g, stopper)
+	if cfg.LivenessThreshold > 0 {
+		nl.SetThreshold(cfg.LivenessThreshold)
+	}
+
 	n := &Node{
-		id:         nodeID,
-		clusterID:  clusterID,
-		desc:       desc,
-		engine:     engine,
-		clock:      clock,
-		rpcServer:  srv,
-		rpcContext: rpcCtx,
-		gossip:     g,
-		stopper:    stopper,
+		id:                nodeID,
+		clusterID:         clusterID,
+		desc:              desc,
+		engine:            engine,
+		clock:             clock,
+		rpcServer:         srv,
+		rpcContext:        rpcCtx,
+		gossip:            g,
+		liveness:          nl,
+		clockMonitor:      clockMonitor,
+		stopper:           stopper,
+		heartbeatInterval: cfg.HeartbeatInterval,
 	}
 
 	allocator := newNodeIDAllocator(engine, clusterID)
@@ -114,6 +133,43 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 func (n *Node) Start() {
 	n.rpcServer.Start()
 	n.gossip.Start()
+	n.liveness.Start()
+	n.startHeartbeatWorker()
+}
+
+// startHeartbeatWorker periodically pings all gossip peers, measures clock
+// offsets, and updates the RemoteClockMonitor. It logs (but does not crash)
+// when an offset exceeds maxOffset.
+func (n *Node) startHeartbeatWorker() {
+	n.stopper.RunWorker(func() {
+		ticker := time.NewTicker(n.heartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-n.stopper.ShouldStop():
+				return
+			case <-ticker.C:
+				n.measurePeerOffsets()
+			}
+		}
+	})
+}
+
+func (n *Node) measurePeerOffsets() {
+	for _, addr := range n.gossip.Peers() {
+		conn, err := n.rpcContext.GRPCDialNode(addr)
+		if err != nil {
+			continue
+		}
+		client := pb.NewInternalClient(conn)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		remoteID, offset, err := rpc.MeasureOffsetFromClient(ctx, client, n.clock, int32(n.id))
+		cancel()
+		if err != nil {
+			continue
+		}
+		n.clockMonitor.UpdateOffset(remoteID, offset)
+	}
 }
 
 func (n *Node) Stop() {
@@ -123,15 +179,17 @@ func (n *Node) Stop() {
 	n.engine.Close()
 }
 
-func (n *Node) NodeID() NodeID                 { return n.id }
-func (n *Node) ClusterID() ClusterID           { return n.clusterID }
-func (n *Node) Descriptor() *pb.NodeDescriptor { return n.desc }
-func (n *Node) Engine() storage.Engine         { return n.engine }
-func (n *Node) Clock() *hlc.Clock              { return n.clock }
-func (n *Node) RPCAddr() string                { return n.rpcServer.Addr() }
-func (n *Node) RPCContext() *rpc.Context       { return n.rpcContext }
-func (n *Node) Gossip() *gossip.Gossip         { return n.gossip }
-func (n *Node) Stopper() *Stopper              { return n.stopper }
+func (n *Node) NodeID() NodeID                       { return n.id }
+func (n *Node) ClusterID() ClusterID                 { return n.clusterID }
+func (n *Node) Descriptor() *pb.NodeDescriptor       { return n.desc }
+func (n *Node) Engine() storage.Engine               { return n.engine }
+func (n *Node) Clock() *hlc.Clock                    { return n.clock }
+func (n *Node) RPCAddr() string                      { return n.rpcServer.Addr() }
+func (n *Node) RPCContext() *rpc.Context             { return n.rpcContext }
+func (n *Node) Gossip() *gossip.Gossip               { return n.gossip }
+func (n *Node) Liveness() *liveness.NodeLiveness     { return n.liveness }
+func (n *Node) ClockMonitor() *rpc.RemoteClockMonitor { return n.clockMonitor }
+func (n *Node) Stopper() *Stopper                    { return n.stopper }
 
 type nodeServer struct {
 	pb.UnimplementedInternalServer

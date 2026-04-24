@@ -73,6 +73,17 @@ func (g *Gossip) GetInfo(key string) (*Info, bool) {
 	return g.store.GetInfo(key)
 }
 
+// Peers returns a snapshot of the current peer address set.
+func (g *Gossip) Peers() []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	out := make([]string, 0, len(g.peers))
+	for addr := range g.peers {
+		out = append(out, addr)
+	}
+	return out
+}
+
 func (g *Gossip) AddPeer(addr string) {
 	if addr == "" || addr == g.addr {
 		return
