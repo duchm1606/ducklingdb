@@ -20,8 +20,9 @@ type Gossip struct {
 	addr   string
 	store  *InfoStore
 
-	mu      sync.RWMutex
-	peers   map[string]struct{}
+	mu        sync.RWMutex
+	peers     map[string]struct{}
+	callbacks map[string][]func(key string, val []byte) // keyPrefix → listeners
 
 	rpcCtx  *rpc.Context
 	stopper *stop.Stopper
@@ -31,13 +32,36 @@ type Gossip struct {
 
 func New(nodeID int32, addr string, rpcCtx *rpc.Context, stopper *stop.Stopper) *Gossip {
 	return &Gossip{
-		nodeID:   nodeID,
-		addr:     addr,
-		store:    NewInfoStore(),
-		peers:    make(map[string]struct{}),
-		rpcCtx:   rpcCtx,
-		stopper:  stopper,
-		interval: defaultInterval,
+		nodeID:    nodeID,
+		addr:      addr,
+		store:     NewInfoStore(),
+		peers:     make(map[string]struct{}),
+		callbacks: make(map[string][]func(string, []byte)),
+		rpcCtx:    rpcCtx,
+		stopper:   stopper,
+		interval:  defaultInterval,
+	}
+}
+
+// RegisterCallback registers fn to be called whenever gossip info whose key
+// starts with keyPrefix is received or updated. fn is called with the full
+// key and the raw value bytes.
+func (g *Gossip) RegisterCallback(keyPrefix string, fn func(key string, val []byte)) {
+	g.mu.Lock()
+	g.callbacks[keyPrefix] = append(g.callbacks[keyPrefix], fn)
+	g.mu.Unlock()
+}
+
+// fireCallbacks fires all registered callbacks whose prefix matches key.
+func (g *Gossip) fireCallbacks(key string, val []byte) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	for prefix, fns := range g.callbacks {
+		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
+			for _, fn := range fns {
+				fn(key, val)
+			}
+		}
 	}
 }
 
@@ -101,9 +125,12 @@ func (g *Gossip) Gossip(stream pb.GossipService_GossipServer) error {
 			return err
 		}
 
-		// Merge their delta into our store.
-		for _, info := range msg.Delta {
-			g.store.Combine(protoToInfo(info))
+		// Merge their delta into our store and fire callbacks for new items.
+		for _, pbInfo := range msg.Delta {
+			info := protoToInfo(pbInfo)
+			if g.store.Combine(info) {
+				g.fireCallbacks(info.Key, info.Value)
+			}
 		}
 
 		// Learn about this peer for future rounds.
@@ -121,6 +148,12 @@ func (g *Gossip) Gossip(stream pb.GossipService_GossipServer) error {
 			return err
 		}
 	}
+}
+
+// GossipWithPeerForTest triggers a single gossip round with addr and is
+// exported for use in tests outside this package.
+func (g *Gossip) GossipWithPeerForTest(addr string) error {
+	return g.gossipWithPeer(addr)
 }
 
 // gossipWithPeer is the client side: dial peer, exchange one round.
@@ -154,8 +187,11 @@ func (g *Gossip) gossipWithPeer(addr string) error {
 		return err
 	}
 	if resp != nil {
-		for _, info := range resp.Delta {
-			g.store.Combine(protoToInfo(info))
+		for _, pbInfo := range resp.Delta {
+			info := protoToInfo(pbInfo)
+			if g.store.Combine(info) {
+				g.fireCallbacks(info.Key, info.Value)
+			}
 		}
 		g.AddPeer(resp.Addr)
 	}
