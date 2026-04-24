@@ -281,8 +281,10 @@ func (rn *RawNode) Step(m Message) error {
 				RejectHint: rn.log.lastIndex()})
 			return nil
 		}
-		rn.electionElapsed = 0
-		rn.leadID = m.From
+		// A valid AppendEntries from a leader establishes authority: any Candidate
+		// must step down (Raft §5.2 — candidate reverts when it sees a leader with
+		// term >= its own).
+		rn.becomeFollower(m.Term, m.From)
 		// Check prevLog consistency
 		if m.Index > 0 {
 			t, err := rn.log.term(m.Index)
