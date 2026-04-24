@@ -3,12 +3,18 @@ package server
 import (
 	"context"
 	"fmt"
+	"log"
+	"strings"
+	"sync"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 
 	"github.com/duchm1606/ducklingdb/internal/gossip"
 	"github.com/duchm1606/ducklingdb/internal/kv/kvserver"
 	"github.com/duchm1606/ducklingdb/internal/kv/kvserver/liveness"
 	pb "github.com/duchm1606/ducklingdb/internal/proto"
+	"github.com/duchm1606/ducklingdb/internal/raft"
 	"github.com/duchm1606/ducklingdb/internal/rpc"
 	"github.com/duchm1606/ducklingdb/internal/storage"
 	"github.com/duchm1606/ducklingdb/internal/storage/lsm"
@@ -23,6 +29,7 @@ type NodeConfig struct {
 	Addr               string
 	DataDir            string
 	JoinAddrs          []string
+	Peers              []string
 	MaxOffset          time.Duration
 	NodeID             NodeID
 	LivenessThreshold  time.Duration // 0 → default (5s)
@@ -43,6 +50,12 @@ type Node struct {
 	stopper      *Stopper
 
 	heartbeatInterval time.Duration
+
+	replica      *kvserver.Replica
+	replicaMu    sync.RWMutex
+	addrToNodeID map[string]uint64
+	addrMu       sync.RWMutex
+	peerAddrs    []string
 }
 
 func NewNode(cfg NodeConfig) (*Node, error) {
@@ -83,9 +96,10 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 		clusterID = state.ClusterID
 	}
 
+	nodeAddr := normalizeAddr(cfg.Addr)
 	desc := &pb.NodeDescriptor{
 		NodeId:  int32(nodeID),
-		Address: srv.Addr(),
+		Address: nodeAddr,
 	}
 
 	stopper := NewStopper()
@@ -115,7 +129,25 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 		clockMonitor:      clockMonitor,
 		stopper:           stopper,
 		heartbeatInterval: cfg.HeartbeatInterval,
+		addrToNodeID:      make(map[string]uint64),
+		peerAddrs:         cfg.Peers,
 	}
+
+	// Seed own address into the map.
+	n.addrMu.Lock()
+	n.addrToNodeID[nodeAddr] = uint64(nodeID)
+	n.addrMu.Unlock()
+
+	// Register gossip callback to populate addrToNodeID when node descriptors arrive.
+	g.RegisterCallback(gossip.KeyNodeDescPrefix, func(key string, val []byte) {
+		var nd pb.NodeDescriptor
+		if err := proto.Unmarshal(val, &nd); err != nil {
+			return
+		}
+		n.addrMu.Lock()
+		n.addrToNodeID[nd.Address] = uint64(nd.NodeId)
+		n.addrMu.Unlock()
+	})
 
 	allocator := newNodeIDAllocator(engine, clusterID)
 	svc := &nodeServer{
@@ -127,6 +159,9 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 	pb.RegisterInternalServer(srv.GRPCServer(), svc)
 	pb.RegisterGossipServiceServer(srv.GRPCServer(), g)
 
+	raftSvc := &raftServiceServer{node: n}
+	pb.RegisterRaftServiceServer(srv.GRPCServer(), raftSvc)
+
 	return n, nil
 }
 
@@ -135,6 +170,87 @@ func (n *Node) Start() {
 	n.gossip.Start()
 	n.liveness.Start()
 	n.startHeartbeatWorker()
+
+	// Gossip own descriptor so peers can resolve our NodeID.
+	descBytes, _ := proto.Marshal(n.desc)
+	n.gossip.AddInfo(gossip.MakeNodeDescKey(int32(n.id)), descBytes, 0)
+
+	if len(n.peerAddrs) > 0 {
+		n.startRaftReplica()
+	}
+}
+
+func (n *Node) startRaftReplica() {
+	go func() {
+		peerIDs, err := n.waitForPeerIDs(10 * time.Second)
+		if err != nil {
+			log.Printf("[raft] could not resolve peer NodeIDs: %v", err)
+			return
+		}
+		log.Printf("[raft] starting replica id=%d peers=%v", n.id, peerIDs)
+		storage := raft.NewLSMLogStorage(n.engine)
+		rn := raft.NewRawNode(uint64(n.id), peerIDs, storage)
+		bh := kvserver.NewBatchHandler(n.engine, n.clock)
+		r := kvserver.NewReplica(uint64(n.id), rn, storage, bh, func(msgs []raft.Message) {
+			n.sendRaftMessages(msgs)
+		})
+		n.replicaMu.Lock()
+		n.replica = r
+		n.replicaMu.Unlock()
+		r.Start()
+		log.Printf("[raft] replica started")
+	}()
+}
+
+func (n *Node) waitForPeerIDs(timeout time.Duration) ([]uint64, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		n.addrMu.RLock()
+		found := make([]uint64, 0, len(n.peerAddrs))
+		allFound := true
+		for _, addr := range n.peerAddrs {
+			id, ok := n.addrToNodeID[addr]
+			if !ok {
+				allFound = false
+				break
+			}
+			found = append(found, id)
+		}
+		n.addrMu.RUnlock()
+		if allFound {
+			return found, nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return nil, fmt.Errorf("timeout waiting for peer NodeIDs")
+}
+
+func (n *Node) sendRaftMessages(msgs []raft.Message) {
+	for _, m := range msgs {
+		m := m
+		go func() {
+			var targetAddr string
+			n.addrMu.RLock()
+			for addr, id := range n.addrToNodeID {
+				if id == m.To {
+					targetAddr = addr
+					break
+				}
+			}
+			n.addrMu.RUnlock()
+			if targetAddr == "" {
+				return
+			}
+			conn, err := n.rpcContext.GRPCDialNode(targetAddr)
+			if err != nil {
+				return
+			}
+			client := pb.NewRaftServiceClient(conn)
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			_, _ = client.Step(ctx, raftMessageToProto(m))
+		}()
+	}
 }
 
 // startHeartbeatWorker periodically pings all gossip peers, measures clock
@@ -177,6 +293,21 @@ func (n *Node) Stop() {
 	n.rpcServer.Stop()
 	n.rpcContext.Close()
 	n.engine.Close()
+}
+
+func (n *Node) getReplica() *kvserver.Replica {
+	n.replicaMu.RLock()
+	defer n.replicaMu.RUnlock()
+	return n.replica
+}
+
+// normalizeAddr converts ":port" to "127.0.0.1:port" to match the peer
+// address format used by the --peers CLI flag.
+func normalizeAddr(addr string) string {
+	if strings.HasPrefix(addr, ":") {
+		return "127.0.0.1" + addr
+	}
+	return addr
 }
 
 func (n *Node) NodeID() NodeID                       { return n.id }

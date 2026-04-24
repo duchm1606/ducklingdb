@@ -46,6 +46,7 @@ func runStart(args []string) {
 	addr := fs.String("addr", ":26257", "gRPC listen address")
 	dataDir := fs.String("data", "", "data directory (required)")
 	joinStr := fs.String("join", "", "comma-separated seed addresses to join an existing cluster")
+	peersStr := fs.String("peers", "", "comma-separated list of ALL cluster addresses (including self) for Raft")
 	statusInterval := fs.Duration("status-interval", 5*time.Second, "how often to print cluster status (0 = off)")
 	fs.Parse(args)
 
@@ -67,10 +68,25 @@ func runStart(args []string) {
 		}
 	}
 
+	var peerAddrs []string
+	if *peersStr != "" {
+		for _, p := range strings.Split(*peersStr, ",") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			if strings.HasPrefix(p, ":") {
+				p = "127.0.0.1" + p
+			}
+			peerAddrs = append(peerAddrs, p)
+		}
+	}
+
 	n, err := server.NewNode(server.NodeConfig{
 		Addr:      *addr,
 		DataDir:   *dataDir,
 		JoinAddrs: joinAddrs,
+		Peers:     peerAddrs,
 	})
 	if err != nil {
 		log.Fatalf("init node: %v", err)
