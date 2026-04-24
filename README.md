@@ -61,16 +61,19 @@ Supported statements: `CREATE TABLE`, `INSERT`, `SELECT` (full scan + `WHERE pk 
 Open three terminals. Each node needs its own data directory.
 
 **Terminal 1 — bootstrap node**
+
 ```bash
 ./bin/ducklingdb start --addr :26257 --data /tmp/duck1
 ```
 
 **Terminal 2 — join node**
+
 ```bash
 ./bin/ducklingdb start --addr :26258 --data /tmp/duck2 --join :26257
 ```
 
 **Terminal 3 — join node**
+
 ```bash
 ./bin/ducklingdb start --addr :26259 --data /tmp/duck3 --join :26257
 ```
@@ -83,6 +86,7 @@ Within a few seconds you'll see gossip log lines in each terminal as nodes excha
 ```
 
 **Check a node's status** (separate terminal):
+
 ```bash
 ./bin/ducklingdb status --addr :26257
 ```
@@ -91,16 +95,14 @@ Within a few seconds you'll see gossip log lines in each terminal as nodes excha
 
 ## Milestones
 
-| # | Milestone | Status |
-|---|-----------|--------|
-| M1 | LSM Tree Storage Engine + MVCC + HLC | Done |
-| M2 | Single-Node ACID Transactions (SI/SSI) | Done |
-| M3 | gRPC Networking + Gossip Protocol + SQL REPL | Done |
-| M4 | Raft Consensus + Ranges + Leases | Planned |
-| M5 | Distributed Transactions + Concurrency | Planned |
-| M6 | pgwire (psql compatibility) | Planned |
-
-See [`docs/SCOPE.md`](docs/SCOPE.md) for the full project scope, feature breakdown, and implementation plan.
+| #   | Milestone                                    | Status  |
+| --- | -------------------------------------------- | ------- |
+| M1  | LSM Tree Storage Engine + MVCC + HLC         | Done    |
+| M2  | Single-Node ACID Transactions (SI/SSI)       | Done    |
+| M3  | gRPC Networking + Gossip Protocol + SQL REPL | Done    |
+| M4  | Raft Consensus + Ranges + Leases             | Planned |
+| M5  | Distributed Transactions + Concurrency       | Planned |
+| M6  | pgwire (psql compatibility)                  | Planned |
 
 ## License
 
