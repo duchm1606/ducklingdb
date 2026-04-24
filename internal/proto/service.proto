@@ -32,3 +32,33 @@ message PingResponse {
   int32 node_id = 1;
   Timestamp server_time = 2;
 }
+
+// --- Gossip messages ---
+
+// Info is a single piece of gossip data identified by a string key.
+message Info {
+  string key = 1;
+  bytes value = 2;
+  int64 orig_stamp = 3;   // monotonic sequence number from the originating node
+  int32 node_id = 4;      // which node created this info
+  int64 ttl_seconds = 5;  // time-to-live in seconds (0 = no expiry)
+}
+
+// GossipMessage is exchanged bidirectionally on a Gossip stream.
+// Each side sends its delta (items the peer hasn't seen) and its
+// current high-water stamps so the peer can compute the next delta.
+message GossipMessage {
+  int32 node_id = 1;
+  string addr = 2;
+  map<string, Info> delta = 3;       // key → info (only fresh items)
+  map<int32, int64> high_water = 4;  // nodeID → highest seq seen from that node
+}
+
+// GossipService is the gossip RPC service. Each node acts as both
+// client and server: it connects to peers (client side) and accepts
+// incoming connections from peers (server side).
+service GossipService {
+  // Gossip is a long-lived bidirectional stream. Each round, both sides
+  // send a GossipMessage containing their delta and high-water stamps.
+  rpc Gossip(stream GossipMessage) returns (stream GossipMessage) {}
+}

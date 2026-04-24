@@ -171,3 +171,111 @@ var Internal_ServiceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "internal/proto/service.proto",
 }
+
+const (
+	GossipService_Gossip_FullMethodName = "/ducklingdb.proto.GossipService/Gossip"
+)
+
+// GossipServiceClient is the client API for GossipService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// GossipService is the gossip RPC service. Each node acts as both
+// client and server: it connects to peers (client side) and accepts
+// incoming connections from peers (server side).
+type GossipServiceClient interface {
+	// Gossip is a long-lived bidirectional stream. Each round, both sides
+	// send a GossipMessage containing their delta and high-water stamps.
+	Gossip(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[GossipMessage, GossipMessage], error)
+}
+
+type gossipServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewGossipServiceClient(cc grpc.ClientConnInterface) GossipServiceClient {
+	return &gossipServiceClient{cc}
+}
+
+func (c *gossipServiceClient) Gossip(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[GossipMessage, GossipMessage], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &GossipService_ServiceDesc.Streams[0], GossipService_Gossip_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[GossipMessage, GossipMessage]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type GossipService_GossipClient = grpc.BidiStreamingClient[GossipMessage, GossipMessage]
+
+// GossipServiceServer is the server API for GossipService service.
+// All implementations must embed UnimplementedGossipServiceServer
+// for forward compatibility.
+//
+// GossipService is the gossip RPC service. Each node acts as both
+// client and server: it connects to peers (client side) and accepts
+// incoming connections from peers (server side).
+type GossipServiceServer interface {
+	// Gossip is a long-lived bidirectional stream. Each round, both sides
+	// send a GossipMessage containing their delta and high-water stamps.
+	Gossip(grpc.BidiStreamingServer[GossipMessage, GossipMessage]) error
+	mustEmbedUnimplementedGossipServiceServer()
+}
+
+// UnimplementedGossipServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedGossipServiceServer struct{}
+
+func (UnimplementedGossipServiceServer) Gossip(grpc.BidiStreamingServer[GossipMessage, GossipMessage]) error {
+	return status.Error(codes.Unimplemented, "method Gossip not implemented")
+}
+func (UnimplementedGossipServiceServer) mustEmbedUnimplementedGossipServiceServer() {}
+func (UnimplementedGossipServiceServer) testEmbeddedByValue()                       {}
+
+// UnsafeGossipServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to GossipServiceServer will
+// result in compilation errors.
+type UnsafeGossipServiceServer interface {
+	mustEmbedUnimplementedGossipServiceServer()
+}
+
+func RegisterGossipServiceServer(s grpc.ServiceRegistrar, srv GossipServiceServer) {
+	// If the following call panics, it indicates UnimplementedGossipServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&GossipService_ServiceDesc, srv)
+}
+
+func _GossipService_Gossip_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(GossipServiceServer).Gossip(&grpc.GenericServerStream[GossipMessage, GossipMessage]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type GossipService_GossipServer = grpc.BidiStreamingServer[GossipMessage, GossipMessage]
+
+// GossipService_ServiceDesc is the grpc.ServiceDesc for GossipService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var GossipService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "ducklingdb.proto.GossipService",
+	HandlerType: (*GossipServiceServer)(nil),
+	Methods:     []grpc.MethodDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "Gossip",
+			Handler:       _GossipService_Gossip_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+	},
+	Metadata: "internal/proto/service.proto",
+}

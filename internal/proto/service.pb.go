@@ -129,6 +129,154 @@ func (x *PingResponse) GetServerTime() *Timestamp {
 	return nil
 }
 
+// Info is a single piece of gossip data identified by a string key.
+type Info struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Value         []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	OrigStamp     int64                  `protobuf:"varint,3,opt,name=orig_stamp,json=origStamp,proto3" json:"orig_stamp,omitempty"`    // monotonic sequence number from the originating node
+	NodeId        int32                  `protobuf:"varint,4,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`             // which node created this info
+	TtlSeconds    int64                  `protobuf:"varint,5,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"` // time-to-live in seconds (0 = no expiry)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Info) Reset() {
+	*x = Info{}
+	mi := &file_internal_proto_service_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Info) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Info) ProtoMessage() {}
+
+func (x *Info) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_proto_service_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Info.ProtoReflect.Descriptor instead.
+func (*Info) Descriptor() ([]byte, []int) {
+	return file_internal_proto_service_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *Info) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *Info) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *Info) GetOrigStamp() int64 {
+	if x != nil {
+		return x.OrigStamp
+	}
+	return 0
+}
+
+func (x *Info) GetNodeId() int32 {
+	if x != nil {
+		return x.NodeId
+	}
+	return 0
+}
+
+func (x *Info) GetTtlSeconds() int64 {
+	if x != nil {
+		return x.TtlSeconds
+	}
+	return 0
+}
+
+// GossipMessage is exchanged bidirectionally on a Gossip stream.
+// Each side sends its delta (items the peer hasn't seen) and its
+// current high-water stamps so the peer can compute the next delta.
+type GossipMessage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeId        int32                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Addr          string                 `protobuf:"bytes,2,opt,name=addr,proto3" json:"addr,omitempty"`
+	Delta         map[string]*Info       `protobuf:"bytes,3,rep,name=delta,proto3" json:"delta,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`                            // key → info (only fresh items)
+	HighWater     map[int32]int64        `protobuf:"bytes,4,rep,name=high_water,json=highWater,proto3" json:"high_water,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"` // nodeID → highest seq seen from that node
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GossipMessage) Reset() {
+	*x = GossipMessage{}
+	mi := &file_internal_proto_service_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GossipMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GossipMessage) ProtoMessage() {}
+
+func (x *GossipMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_proto_service_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GossipMessage.ProtoReflect.Descriptor instead.
+func (*GossipMessage) Descriptor() ([]byte, []int) {
+	return file_internal_proto_service_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *GossipMessage) GetNodeId() int32 {
+	if x != nil {
+		return x.NodeId
+	}
+	return 0
+}
+
+func (x *GossipMessage) GetAddr() string {
+	if x != nil {
+		return x.Addr
+	}
+	return ""
+}
+
+func (x *GossipMessage) GetDelta() map[string]*Info {
+	if x != nil {
+		return x.Delta
+	}
+	return nil
+}
+
+func (x *GossipMessage) GetHighWater() map[int32]int64 {
+	if x != nil {
+		return x.HighWater
+	}
+	return nil
+}
+
 var File_internal_proto_service_proto protoreflect.FileDescriptor
 
 const file_internal_proto_service_proto_rawDesc = "" +
@@ -141,10 +289,33 @@ const file_internal_proto_service_proto_rawDesc = "" +
 	"\fPingResponse\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x05R\x06nodeId\x12<\n" +
 	"\vserver_time\x18\x02 \x01(\v2\x1b.ducklingdb.proto.TimestampR\n" +
-	"serverTime2\xa4\x01\n" +
+	"serverTime\"\x87\x01\n" +
+	"\x04Info\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\x12\x1d\n" +
+	"\n" +
+	"orig_stamp\x18\x03 \x01(\x03R\torigStamp\x12\x17\n" +
+	"\anode_id\x18\x04 \x01(\x05R\x06nodeId\x12\x1f\n" +
+	"\vttl_seconds\x18\x05 \x01(\x03R\n" +
+	"ttlSeconds\"\xdd\x02\n" +
+	"\rGossipMessage\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\x05R\x06nodeId\x12\x12\n" +
+	"\x04addr\x18\x02 \x01(\tR\x04addr\x12@\n" +
+	"\x05delta\x18\x03 \x03(\v2*.ducklingdb.proto.GossipMessage.DeltaEntryR\x05delta\x12M\n" +
+	"\n" +
+	"high_water\x18\x04 \x03(\v2..ducklingdb.proto.GossipMessage.HighWaterEntryR\thighWater\x1aP\n" +
+	"\n" +
+	"DeltaEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12,\n" +
+	"\x05value\x18\x02 \x01(\v2\x16.ducklingdb.proto.InfoR\x05value:\x028\x01\x1a<\n" +
+	"\x0eHighWaterEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x012\xa4\x01\n" +
 	"\bInternal\x12J\n" +
 	"\x05Batch\x12\x1e.ducklingdb.proto.BatchRequest\x1a\x1f.ducklingdb.proto.BatchResponse\"\x00\x12L\n" +
-	"\tHeartbeat\x12\x1d.ducklingdb.proto.PingRequest\x1a\x1e.ducklingdb.proto.PingResponse\"\x00B0Z.github.com/duchm1606/ducklingdb/internal/protob\x06proto3"
+	"\tHeartbeat\x12\x1d.ducklingdb.proto.PingRequest\x1a\x1e.ducklingdb.proto.PingResponse\"\x002a\n" +
+	"\rGossipService\x12P\n" +
+	"\x06Gossip\x12\x1f.ducklingdb.proto.GossipMessage\x1a\x1f.ducklingdb.proto.GossipMessage\"\x00(\x010\x01B0Z.github.com/duchm1606/ducklingdb/internal/protob\x06proto3"
 
 var (
 	file_internal_proto_service_proto_rawDescOnce sync.Once
@@ -158,26 +329,35 @@ func file_internal_proto_service_proto_rawDescGZIP() []byte {
 	return file_internal_proto_service_proto_rawDescData
 }
 
-var file_internal_proto_service_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_internal_proto_service_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_internal_proto_service_proto_goTypes = []any{
 	(*PingRequest)(nil),   // 0: ducklingdb.proto.PingRequest
 	(*PingResponse)(nil),  // 1: ducklingdb.proto.PingResponse
-	(*Timestamp)(nil),     // 2: ducklingdb.proto.Timestamp
-	(*BatchRequest)(nil),  // 3: ducklingdb.proto.BatchRequest
-	(*BatchResponse)(nil), // 4: ducklingdb.proto.BatchResponse
+	(*Info)(nil),          // 2: ducklingdb.proto.Info
+	(*GossipMessage)(nil), // 3: ducklingdb.proto.GossipMessage
+	nil,                   // 4: ducklingdb.proto.GossipMessage.DeltaEntry
+	nil,                   // 5: ducklingdb.proto.GossipMessage.HighWaterEntry
+	(*Timestamp)(nil),     // 6: ducklingdb.proto.Timestamp
+	(*BatchRequest)(nil),  // 7: ducklingdb.proto.BatchRequest
+	(*BatchResponse)(nil), // 8: ducklingdb.proto.BatchResponse
 }
 var file_internal_proto_service_proto_depIdxs = []int32{
-	2, // 0: ducklingdb.proto.PingRequest.server_time:type_name -> ducklingdb.proto.Timestamp
-	2, // 1: ducklingdb.proto.PingResponse.server_time:type_name -> ducklingdb.proto.Timestamp
-	3, // 2: ducklingdb.proto.Internal.Batch:input_type -> ducklingdb.proto.BatchRequest
-	0, // 3: ducklingdb.proto.Internal.Heartbeat:input_type -> ducklingdb.proto.PingRequest
-	4, // 4: ducklingdb.proto.Internal.Batch:output_type -> ducklingdb.proto.BatchResponse
-	1, // 5: ducklingdb.proto.Internal.Heartbeat:output_type -> ducklingdb.proto.PingResponse
-	4, // [4:6] is the sub-list for method output_type
-	2, // [2:4] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	6, // 0: ducklingdb.proto.PingRequest.server_time:type_name -> ducklingdb.proto.Timestamp
+	6, // 1: ducklingdb.proto.PingResponse.server_time:type_name -> ducklingdb.proto.Timestamp
+	4, // 2: ducklingdb.proto.GossipMessage.delta:type_name -> ducklingdb.proto.GossipMessage.DeltaEntry
+	5, // 3: ducklingdb.proto.GossipMessage.high_water:type_name -> ducklingdb.proto.GossipMessage.HighWaterEntry
+	2, // 4: ducklingdb.proto.GossipMessage.DeltaEntry.value:type_name -> ducklingdb.proto.Info
+	7, // 5: ducklingdb.proto.Internal.Batch:input_type -> ducklingdb.proto.BatchRequest
+	0, // 6: ducklingdb.proto.Internal.Heartbeat:input_type -> ducklingdb.proto.PingRequest
+	3, // 7: ducklingdb.proto.GossipService.Gossip:input_type -> ducklingdb.proto.GossipMessage
+	8, // 8: ducklingdb.proto.Internal.Batch:output_type -> ducklingdb.proto.BatchResponse
+	1, // 9: ducklingdb.proto.Internal.Heartbeat:output_type -> ducklingdb.proto.PingResponse
+	3, // 10: ducklingdb.proto.GossipService.Gossip:output_type -> ducklingdb.proto.GossipMessage
+	8, // [8:11] is the sub-list for method output_type
+	5, // [5:8] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_internal_proto_service_proto_init() }
@@ -193,9 +373,9 @@ func file_internal_proto_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_proto_service_proto_rawDesc), len(file_internal_proto_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   6,
 			NumExtensions: 0,
-			NumServices:   1,
+			NumServices:   2,
 		},
 		GoTypes:           file_internal_proto_service_proto_goTypes,
 		DependencyIndexes: file_internal_proto_service_proto_depIdxs,

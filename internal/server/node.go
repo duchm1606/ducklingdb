@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/duchm1606/ducklingdb/internal/gossip"
 	"github.com/duchm1606/ducklingdb/internal/kv/kvserver"
 	pb "github.com/duchm1606/ducklingdb/internal/proto"
 	"github.com/duchm1606/ducklingdb/internal/rpc"
@@ -30,6 +31,7 @@ type Node struct {
 	clock      *hlc.Clock
 	rpcServer  *rpc.Server
 	rpcContext *rpc.Context
+	gossip     *gossip.Gossip
 	stopper    *Stopper
 }
 
@@ -61,6 +63,13 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 		Address: srv.Addr(),
 	}
 
+	stopper := NewStopper()
+
+	g := gossip.New(int32(cfg.NodeID), srv.Addr(), rpcCtx, stopper)
+	for _, seed := range cfg.JoinAddrs {
+		g.AddPeer(seed)
+	}
+
 	n := &Node{
 		id:         cfg.NodeID,
 		desc:       desc,
@@ -68,7 +77,8 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 		clock:      clock,
 		rpcServer:  srv,
 		rpcContext: rpcCtx,
-		stopper:    NewStopper(),
+		gossip:     g,
+		stopper:    stopper,
 	}
 
 	svc := &nodeServer{
@@ -76,12 +86,14 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 		batch:     kvserver.NewBatchHandler(engine, clock),
 	}
 	pb.RegisterInternalServer(srv.GRPCServer(), svc)
+	pb.RegisterGossipServiceServer(srv.GRPCServer(), g)
 
 	return n, nil
 }
 
 func (n *Node) Start() {
 	n.rpcServer.Start()
+	n.gossip.Start()
 }
 
 func (n *Node) Stop() {
@@ -97,6 +109,7 @@ func (n *Node) Engine() storage.Engine         { return n.engine }
 func (n *Node) Clock() *hlc.Clock              { return n.clock }
 func (n *Node) RPCAddr() string                { return n.rpcServer.Addr() }
 func (n *Node) RPCContext() *rpc.Context       { return n.rpcContext }
+func (n *Node) Gossip() *gossip.Gossip         { return n.gossip }
 func (n *Node) Stopper() *Stopper              { return n.stopper }
 
 type nodeServer struct {
