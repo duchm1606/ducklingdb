@@ -3,6 +3,7 @@ package raft
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/duchm1606/ducklingdb/internal/storage"
@@ -12,6 +13,8 @@ var (
 	keyRaftHardState = []byte("\x00raft/hardstate")
 	keyRaftLogPrefix = []byte("\x00raft/log/")
 )
+
+var _ LogStorage = (*LSMLogStorage)(nil)
 
 func raftLogKey(index uint64) []byte {
 	key := make([]byte, len(keyRaftLogPrefix)+8)
@@ -33,7 +36,10 @@ func NewLSMLogStorage(eng storage.Engine) *LSMLogStorage {
 func (s *LSMLogStorage) InitialState() (HardState, error) {
 	data, err := s.eng.Get(keyRaftHardState)
 	if err != nil {
-		return HardState{}, nil // no stored state
+		if errors.Is(err, storage.ErrKeyNotFound) {
+			return HardState{}, nil
+		}
+		return HardState{}, fmt.Errorf("raft: read HardState: %w", err)
 	}
 	var hs HardState
 	if err := json.Unmarshal(data, &hs); err != nil {
@@ -64,11 +70,8 @@ func (s *LSMLogStorage) LastIndex() (uint64, error) {
 	var last uint64
 	for iter.Seek(keyRaftLogPrefix); iter.Valid(); iter.Next() {
 		k := iter.Key()
-		if len(k) < len(keyRaftLogPrefix) || string(k[:len(keyRaftLogPrefix)]) != string(keyRaftLogPrefix) {
+		if len(k) < len(keyRaftLogPrefix)+8 || string(k[:len(keyRaftLogPrefix)]) != string(keyRaftLogPrefix) {
 			break
-		}
-		if iter.IsTombstone() {
-			continue
 		}
 		idx := binary.BigEndian.Uint64(k[len(keyRaftLogPrefix):])
 		if idx > last {
