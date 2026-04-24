@@ -1,4 +1,4 @@
-.PHONY: proto test
+.PHONY: proto build test
 
 proto:
 	protoc \
@@ -9,6 +9,9 @@ proto:
 		internal/proto/api.proto \
 		internal/proto/metadata.proto \
 		internal/proto/service.proto
+
+build:
+	go build -o bin/ducklingdb ./cmd/ducklingdb
 
 test:
 	go test ./...
