@@ -3,6 +3,7 @@ package catalog
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/duchm1606/ducklingdb/internal/storage"
@@ -43,8 +44,12 @@ func schemaKey(name string) []byte {
 }
 
 func CreateTable(engine storage.Engine, schema *TableSchema) error {
-	if _, err := engine.Get(schemaKey(schema.Name)); err == nil {
+	_, err := engine.Get(schemaKey(schema.Name))
+	if err == nil {
 		return fmt.Errorf("table %q already exists", schema.Name)
+	}
+	if !errors.Is(err, storage.ErrKeyNotFound) {
+		return err
 	}
 	data, err := json.Marshal(schema)
 	if err != nil {
@@ -66,8 +71,12 @@ func GetTable(engine storage.Engine, name string) (*TableSchema, error) {
 }
 
 func DropTable(engine storage.Engine, name string) error {
-	if _, err := engine.Get(schemaKey(name)); err != nil {
+	_, err := engine.Get(schemaKey(name))
+	if errors.Is(err, storage.ErrKeyNotFound) {
 		return fmt.Errorf("table %q not found", name)
+	}
+	if err != nil {
+		return err
 	}
 	return engine.Delete(schemaKey(name))
 }
