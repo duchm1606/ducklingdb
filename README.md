@@ -104,6 +104,18 @@ Within a few seconds you'll see gossip log lines in each terminal as nodes excha
 | M5  | Distributed Transactions + Concurrency       | Planned |
 | M6  | pgwire (psql compatibility)                  | Planned |
 
+## Acknowledgements
+
+DucklingDB is heavily inspired by [CockroachDB](https://github.com/cockroachdb/cockroach) and its design documents. Several key ideas were studied directly from the CockroachDB codebase and engineering blog:
+
+- MVCC key encoding and timestamp-ordered storage layout
+- Hybrid Logical Clock (HLC) for causally consistent timestamps across nodes
+- Raft consensus via the `RawNode` / `Ready` loop pattern
+- Gossip-based cluster membership and node liveness tracking
+- BatchRequest / BatchResponse as the uniform write path through Raft
+
+The [CockroachDB design docs](https://github.com/cockroachdb/cockroach/tree/master/docs/design) and the Cockroach Labs engineering blog were invaluable references throughout.
+
 ## License
 
 MIT
