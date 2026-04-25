@@ -5,6 +5,7 @@ import (
 
 	"github.com/duchm1606/ducklingdb/internal/sql/catalog"
 	"github.com/duchm1606/ducklingdb/internal/storage/lsm"
+	"github.com/duchm1606/ducklingdb/internal/util/hlc"
 )
 
 func openEngine(t *testing.T) *lsm.LSMEngine {
@@ -17,8 +18,13 @@ func openEngine(t *testing.T) *lsm.LSMEngine {
 	return eng
 }
 
+func newClock() *hlc.Clock {
+	return hlc.NewClock(hlc.SystemWallClock(), 0)
+}
+
 func TestCreateAndGetTable(t *testing.T) {
 	eng := openEngine(t)
+	clock := newClock()
 	schema := &catalog.TableSchema{
 		Name: "users",
 		Columns: []catalog.Column{
@@ -26,7 +32,7 @@ func TestCreateAndGetTable(t *testing.T) {
 			{Name: "name", Type: catalog.TypeTEXT, PrimaryKey: false},
 		},
 	}
-	if err := catalog.CreateTable(eng, schema); err != nil {
+	if err := catalog.CreateTable(eng, clock, schema); err != nil {
 		t.Fatalf("CreateTable: %v", err)
 	}
 	got, err := catalog.GetTable(eng, "users")
@@ -40,14 +46,15 @@ func TestCreateAndGetTable(t *testing.T) {
 
 func TestCreateTableDuplicate(t *testing.T) {
 	eng := openEngine(t)
+	clock := newClock()
 	schema := &catalog.TableSchema{
 		Name:    "t",
 		Columns: []catalog.Column{{Name: "id", Type: catalog.TypeINT, PrimaryKey: true}},
 	}
-	if err := catalog.CreateTable(eng, schema); err != nil {
+	if err := catalog.CreateTable(eng, clock, schema); err != nil {
 		t.Fatalf("first create: %v", err)
 	}
-	if err := catalog.CreateTable(eng, schema); err == nil {
+	if err := catalog.CreateTable(eng, clock, schema); err == nil {
 		t.Fatal("expected error for duplicate table")
 	}
 }
@@ -61,12 +68,13 @@ func TestGetTableNotFound(t *testing.T) {
 
 func TestDropTable(t *testing.T) {
 	eng := openEngine(t)
+	clock := newClock()
 	schema := &catalog.TableSchema{
 		Name:    "t",
 		Columns: []catalog.Column{{Name: "id", Type: catalog.TypeINT, PrimaryKey: true}},
 	}
-	catalog.CreateTable(eng, schema)
-	if err := catalog.DropTable(eng, "t"); err != nil {
+	catalog.CreateTable(eng, clock, schema)
+	if err := catalog.DropTable(eng, clock, "t"); err != nil {
 		t.Fatalf("DropTable: %v", err)
 	}
 	if _, err := catalog.GetTable(eng, "t"); err == nil {
@@ -76,8 +84,9 @@ func TestDropTable(t *testing.T) {
 
 func TestListTables(t *testing.T) {
 	eng := openEngine(t)
+	clock := newClock()
 	for _, name := range []string{"a", "b", "c"} {
-		catalog.CreateTable(eng, &catalog.TableSchema{
+		catalog.CreateTable(eng, clock, &catalog.TableSchema{
 			Name:    name,
 			Columns: []catalog.Column{{Name: "id", Type: catalog.TypeINT, PrimaryKey: true}},
 		})
@@ -93,6 +102,7 @@ func TestListTables(t *testing.T) {
 
 func TestPrimaryKeyColumn(t *testing.T) {
 	eng := openEngine(t)
+	clock := newClock()
 	schema := &catalog.TableSchema{
 		Name: "t",
 		Columns: []catalog.Column{
@@ -100,7 +110,7 @@ func TestPrimaryKeyColumn(t *testing.T) {
 			{Name: "name", Type: catalog.TypeTEXT, PrimaryKey: false},
 		},
 	}
-	catalog.CreateTable(eng, schema)
+	catalog.CreateTable(eng, clock, schema)
 	got, _ := catalog.GetTable(eng, "t")
 	pk := got.PrimaryKeyColumn()
 	if pk == nil || pk.Name != "id" {

@@ -22,6 +22,7 @@ const (
 	Internal_Batch_FullMethodName          = "/ducklingdb.proto.Internal/Batch"
 	Internal_Heartbeat_FullMethodName      = "/ducklingdb.proto.Internal/Heartbeat"
 	Internal_AllocateNodeID_FullMethodName = "/ducklingdb.proto.Internal/AllocateNodeID"
+	Internal_ExecSQL_FullMethodName        = "/ducklingdb.proto.Internal/ExecSQL"
 )
 
 // InternalClient is the client API for Internal service.
@@ -40,6 +41,9 @@ type InternalClient interface {
 	// AllocateNodeID is called by a joining node to obtain a unique NodeID
 	// and learn the cluster's identity. Only bootstrap nodes handle this.
 	AllocateNodeID(ctx context.Context, in *AllocateNodeIDRequest, opts ...grpc.CallOption) (*AllocateNodeIDResponse, error)
+	// ExecSQL executes a SQL statement on the receiving node. Writes go through
+	// Raft consensus when the node has an active replica.
+	ExecSQL(ctx context.Context, in *SQLRequest, opts ...grpc.CallOption) (*SQLResponse, error)
 }
 
 type internalClient struct {
@@ -80,6 +84,16 @@ func (c *internalClient) AllocateNodeID(ctx context.Context, in *AllocateNodeIDR
 	return out, nil
 }
 
+func (c *internalClient) ExecSQL(ctx context.Context, in *SQLRequest, opts ...grpc.CallOption) (*SQLResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SQLResponse)
+	err := c.cc.Invoke(ctx, Internal_ExecSQL_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // InternalServer is the server API for Internal service.
 // All implementations must embed UnimplementedInternalServer
 // for forward compatibility.
@@ -96,6 +110,9 @@ type InternalServer interface {
 	// AllocateNodeID is called by a joining node to obtain a unique NodeID
 	// and learn the cluster's identity. Only bootstrap nodes handle this.
 	AllocateNodeID(context.Context, *AllocateNodeIDRequest) (*AllocateNodeIDResponse, error)
+	// ExecSQL executes a SQL statement on the receiving node. Writes go through
+	// Raft consensus when the node has an active replica.
+	ExecSQL(context.Context, *SQLRequest) (*SQLResponse, error)
 	mustEmbedUnimplementedInternalServer()
 }
 
@@ -114,6 +131,9 @@ func (UnimplementedInternalServer) Heartbeat(context.Context, *PingRequest) (*Pi
 }
 func (UnimplementedInternalServer) AllocateNodeID(context.Context, *AllocateNodeIDRequest) (*AllocateNodeIDResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AllocateNodeID not implemented")
+}
+func (UnimplementedInternalServer) ExecSQL(context.Context, *SQLRequest) (*SQLResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ExecSQL not implemented")
 }
 func (UnimplementedInternalServer) mustEmbedUnimplementedInternalServer() {}
 func (UnimplementedInternalServer) testEmbeddedByValue()                  {}
@@ -190,6 +210,24 @@ func _Internal_AllocateNodeID_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Internal_ExecSQL_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SQLRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InternalServer).ExecSQL(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Internal_ExecSQL_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InternalServer).ExecSQL(ctx, req.(*SQLRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Internal_ServiceDesc is the grpc.ServiceDesc for Internal service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -208,6 +246,10 @@ var Internal_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AllocateNodeID",
 			Handler:    _Internal_AllocateNodeID_Handler,
+		},
+		{
+			MethodName: "ExecSQL",
+			Handler:    _Internal_ExecSQL_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

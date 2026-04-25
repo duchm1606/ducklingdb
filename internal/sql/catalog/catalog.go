@@ -1,12 +1,13 @@
 package catalog
 
 import (
-	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"math"
 
 	"github.com/duchm1606/ducklingdb/internal/storage"
+	"github.com/duchm1606/ducklingdb/internal/storage/mvcc"
+	"github.com/duchm1606/ducklingdb/internal/util/hlc"
 )
 
 type ColumnType string
@@ -29,7 +30,6 @@ type TableSchema struct {
 	Columns []Column `json:"columns"`
 }
 
-// PrimaryKeyColumn returns the primary key column, or nil if none.
 func (s *TableSchema) PrimaryKeyColumn() *Column {
 	for i := range s.Columns {
 		if s.Columns[i].PrimaryKey {
@@ -39,67 +39,59 @@ func (s *TableSchema) PrimaryKeyColumn() *Column {
 	return nil
 }
 
-func schemaKey(name string) []byte {
+// SchemaKey returns the MVCC key used to store the schema for the named table.
+func SchemaKey(name string) []byte {
 	return []byte("\x00schema/" + name)
 }
 
-func CreateTable(engine storage.Engine, schema *TableSchema) error {
-	_, err := engine.Get(schemaKey(schema.Name))
-	if err == nil {
+// maxSchemaTS is used for reads — always returns the latest schema version.
+var maxSchemaTS = hlc.Timestamp{WallTime: math.MaxInt64}
+
+func CreateTable(engine storage.Engine, clock *hlc.Clock, schema *TableSchema) error {
+	val, _ := mvcc.MVCCGet(engine, SchemaKey(schema.Name), maxSchemaTS, mvcc.ReadOptions{})
+	if val != nil {
 		return fmt.Errorf("table %q already exists", schema.Name)
-	}
-	if !errors.Is(err, storage.ErrKeyNotFound) {
-		return err
 	}
 	data, err := json.Marshal(schema)
 	if err != nil {
 		return err
 	}
-	return engine.Put(schemaKey(schema.Name), data)
+	return mvcc.MVCCPut(engine, SchemaKey(schema.Name), clock.Now(), data, nil)
 }
 
 func GetTable(engine storage.Engine, name string) (*TableSchema, error) {
-	data, err := engine.Get(schemaKey(name))
-	if err != nil {
+	val, err := mvcc.MVCCGet(engine, SchemaKey(name), maxSchemaTS, mvcc.ReadOptions{})
+	if err != nil || val == nil {
 		return nil, fmt.Errorf("table %q not found", name)
 	}
 	var schema TableSchema
-	if err := json.Unmarshal(data, &schema); err != nil {
+	if err := json.Unmarshal(val, &schema); err != nil {
 		return nil, err
 	}
 	return &schema, nil
 }
 
-func DropTable(engine storage.Engine, name string) error {
-	_, err := engine.Get(schemaKey(name))
-	if errors.Is(err, storage.ErrKeyNotFound) {
+func DropTable(engine storage.Engine, clock *hlc.Clock, name string) error {
+	val, _ := mvcc.MVCCGet(engine, SchemaKey(name), maxSchemaTS, mvcc.ReadOptions{})
+	if val == nil {
 		return fmt.Errorf("table %q not found", name)
 	}
-	if err != nil {
-		return err
-	}
-	return engine.Delete(schemaKey(name))
+	return mvcc.MVCCDelete(engine, SchemaKey(name), clock.Now(), nil)
 }
 
 func ListTables(engine storage.Engine) ([]*TableSchema, error) {
-	iter, err := engine.NewIterator()
+	kvs, err := mvcc.MVCCScan(engine,
+		[]byte("\x00schema/"),
+		[]byte("\x00schema0"),
+		maxSchemaTS,
+		mvcc.ReadOptions{})
 	if err != nil {
 		return nil, err
 	}
-	defer iter.Close()
-
-	start := []byte("\x00schema/")
-	end := []byte("\x00schema/\xff")
-	var out []*TableSchema
-	for iter.Seek(start); iter.Valid(); iter.Next() {
-		if bytes.Compare(iter.Key(), end) >= 0 {
-			break
-		}
-		if iter.IsTombstone() {
-			continue
-		}
+	out := make([]*TableSchema, 0, len(kvs))
+	for _, kv := range kvs {
 		var s TableSchema
-		if err := json.Unmarshal(iter.Value(), &s); err != nil {
+		if err := json.Unmarshal(kv.Value, &s); err != nil {
 			return nil, err
 		}
 		out = append(out, &s)

@@ -22,6 +22,10 @@ service Internal {
   // AllocateNodeID is called by a joining node to obtain a unique NodeID
   // and learn the cluster's identity. Only bootstrap nodes handle this.
   rpc AllocateNodeID(AllocateNodeIDRequest) returns (AllocateNodeIDResponse) {}
+
+  // ExecSQL executes a SQL statement on the receiving node. Writes go through
+  // Raft consensus when the node has an active replica.
+  rpc ExecSQL(SQLRequest) returns (SQLResponse) {}
 }
 
 // AllocateNodeIDRequest is sent by a node that wants to join the cluster.
@@ -45,6 +49,23 @@ message PingRequest {
 message PingResponse {
   int32 node_id = 1;
   Timestamp server_time = 2;
+}
+
+// --- SQL messages ---
+
+message SQLRequest {
+  string sql = 1;
+}
+
+message SQLRow {
+  repeated string values = 1;
+}
+
+message SQLResponse {
+  repeated string columns = 1;
+  repeated SQLRow rows    = 2;
+  string message          = 3;
+  string error            = 4;
 }
 
 // --- Gossip messages ---

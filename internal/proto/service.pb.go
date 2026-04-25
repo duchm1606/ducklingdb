@@ -219,6 +219,162 @@ func (x *PingResponse) GetServerTime() *Timestamp {
 	return nil
 }
 
+type SQLRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Sql           string                 `protobuf:"bytes,1,opt,name=sql,proto3" json:"sql,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SQLRequest) Reset() {
+	*x = SQLRequest{}
+	mi := &file_internal_proto_service_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SQLRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SQLRequest) ProtoMessage() {}
+
+func (x *SQLRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_proto_service_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SQLRequest.ProtoReflect.Descriptor instead.
+func (*SQLRequest) Descriptor() ([]byte, []int) {
+	return file_internal_proto_service_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *SQLRequest) GetSql() string {
+	if x != nil {
+		return x.Sql
+	}
+	return ""
+}
+
+type SQLRow struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Values        []string               `protobuf:"bytes,1,rep,name=values,proto3" json:"values,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SQLRow) Reset() {
+	*x = SQLRow{}
+	mi := &file_internal_proto_service_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SQLRow) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SQLRow) ProtoMessage() {}
+
+func (x *SQLRow) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_proto_service_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SQLRow.ProtoReflect.Descriptor instead.
+func (*SQLRow) Descriptor() ([]byte, []int) {
+	return file_internal_proto_service_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *SQLRow) GetValues() []string {
+	if x != nil {
+		return x.Values
+	}
+	return nil
+}
+
+type SQLResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Columns       []string               `protobuf:"bytes,1,rep,name=columns,proto3" json:"columns,omitempty"`
+	Rows          []*SQLRow              `protobuf:"bytes,2,rep,name=rows,proto3" json:"rows,omitempty"`
+	Message       string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	Error         string                 `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SQLResponse) Reset() {
+	*x = SQLResponse{}
+	mi := &file_internal_proto_service_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SQLResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SQLResponse) ProtoMessage() {}
+
+func (x *SQLResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_proto_service_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SQLResponse.ProtoReflect.Descriptor instead.
+func (*SQLResponse) Descriptor() ([]byte, []int) {
+	return file_internal_proto_service_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *SQLResponse) GetColumns() []string {
+	if x != nil {
+		return x.Columns
+	}
+	return nil
+}
+
+func (x *SQLResponse) GetRows() []*SQLRow {
+	if x != nil {
+		return x.Rows
+	}
+	return nil
+}
+
+func (x *SQLResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *SQLResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
 // Info is a single piece of gossip data identified by a string key.
 type Info struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -233,7 +389,7 @@ type Info struct {
 
 func (x *Info) Reset() {
 	*x = Info{}
-	mi := &file_internal_proto_service_proto_msgTypes[4]
+	mi := &file_internal_proto_service_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -245,7 +401,7 @@ func (x *Info) String() string {
 func (*Info) ProtoMessage() {}
 
 func (x *Info) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_proto_service_proto_msgTypes[4]
+	mi := &file_internal_proto_service_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -258,7 +414,7 @@ func (x *Info) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Info.ProtoReflect.Descriptor instead.
 func (*Info) Descriptor() ([]byte, []int) {
-	return file_internal_proto_service_proto_rawDescGZIP(), []int{4}
+	return file_internal_proto_service_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *Info) GetKey() string {
@@ -311,7 +467,7 @@ type GossipMessage struct {
 
 func (x *GossipMessage) Reset() {
 	*x = GossipMessage{}
-	mi := &file_internal_proto_service_proto_msgTypes[5]
+	mi := &file_internal_proto_service_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -323,7 +479,7 @@ func (x *GossipMessage) String() string {
 func (*GossipMessage) ProtoMessage() {}
 
 func (x *GossipMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_proto_service_proto_msgTypes[5]
+	mi := &file_internal_proto_service_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -336,7 +492,7 @@ func (x *GossipMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GossipMessage.ProtoReflect.Descriptor instead.
 func (*GossipMessage) Descriptor() ([]byte, []int) {
-	return file_internal_proto_service_proto_rawDescGZIP(), []int{5}
+	return file_internal_proto_service_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *GossipMessage) GetNodeId() int32 {
@@ -384,7 +540,17 @@ const file_internal_proto_service_proto_rawDesc = "" +
 	"\fPingResponse\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x05R\x06nodeId\x12<\n" +
 	"\vserver_time\x18\x02 \x01(\v2\x1b.ducklingdb.proto.TimestampR\n" +
-	"serverTime\"\x87\x01\n" +
+	"serverTime\"\x1e\n" +
+	"\n" +
+	"SQLRequest\x12\x10\n" +
+	"\x03sql\x18\x01 \x01(\tR\x03sql\" \n" +
+	"\x06SQLRow\x12\x16\n" +
+	"\x06values\x18\x01 \x03(\tR\x06values\"\x85\x01\n" +
+	"\vSQLResponse\x12\x18\n" +
+	"\acolumns\x18\x01 \x03(\tR\acolumns\x12,\n" +
+	"\x04rows\x18\x02 \x03(\v2\x18.ducklingdb.proto.SQLRowR\x04rows\x12\x18\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\x12\x14\n" +
+	"\x05error\x18\x04 \x01(\tR\x05error\"\x87\x01\n" +
 	"\x04Info\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\x12\x1d\n" +
@@ -405,11 +571,12 @@ const file_internal_proto_service_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2\x16.ducklingdb.proto.InfoR\x05value:\x028\x01\x1a<\n" +
 	"\x0eHighWaterEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x012\x8b\x02\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x012\xd5\x02\n" +
 	"\bInternal\x12J\n" +
 	"\x05Batch\x12\x1e.ducklingdb.proto.BatchRequest\x1a\x1f.ducklingdb.proto.BatchResponse\"\x00\x12L\n" +
 	"\tHeartbeat\x12\x1d.ducklingdb.proto.PingRequest\x1a\x1e.ducklingdb.proto.PingResponse\"\x00\x12e\n" +
-	"\x0eAllocateNodeID\x12'.ducklingdb.proto.AllocateNodeIDRequest\x1a(.ducklingdb.proto.AllocateNodeIDResponse\"\x002a\n" +
+	"\x0eAllocateNodeID\x12'.ducklingdb.proto.AllocateNodeIDRequest\x1a(.ducklingdb.proto.AllocateNodeIDResponse\"\x00\x12H\n" +
+	"\aExecSQL\x12\x1c.ducklingdb.proto.SQLRequest\x1a\x1d.ducklingdb.proto.SQLResponse\"\x002a\n" +
 	"\rGossipService\x12P\n" +
 	"\x06Gossip\x12\x1f.ducklingdb.proto.GossipMessage\x1a\x1f.ducklingdb.proto.GossipMessage\"\x00(\x010\x012]\n" +
 	"\vRaftService\x12N\n" +
@@ -427,43 +594,49 @@ func file_internal_proto_service_proto_rawDescGZIP() []byte {
 	return file_internal_proto_service_proto_rawDescData
 }
 
-var file_internal_proto_service_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_internal_proto_service_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_internal_proto_service_proto_goTypes = []any{
 	(*AllocateNodeIDRequest)(nil),  // 0: ducklingdb.proto.AllocateNodeIDRequest
 	(*AllocateNodeIDResponse)(nil), // 1: ducklingdb.proto.AllocateNodeIDResponse
 	(*PingRequest)(nil),            // 2: ducklingdb.proto.PingRequest
 	(*PingResponse)(nil),           // 3: ducklingdb.proto.PingResponse
-	(*Info)(nil),                   // 4: ducklingdb.proto.Info
-	(*GossipMessage)(nil),          // 5: ducklingdb.proto.GossipMessage
-	nil,                            // 6: ducklingdb.proto.GossipMessage.DeltaEntry
-	nil,                            // 7: ducklingdb.proto.GossipMessage.HighWaterEntry
-	(*Timestamp)(nil),              // 8: ducklingdb.proto.Timestamp
-	(*BatchRequest)(nil),           // 9: ducklingdb.proto.BatchRequest
-	(*RaftMessage)(nil),            // 10: ducklingdb.proto.RaftMessage
-	(*BatchResponse)(nil),          // 11: ducklingdb.proto.BatchResponse
-	(*RaftMessageResponse)(nil),    // 12: ducklingdb.proto.RaftMessageResponse
+	(*SQLRequest)(nil),             // 4: ducklingdb.proto.SQLRequest
+	(*SQLRow)(nil),                 // 5: ducklingdb.proto.SQLRow
+	(*SQLResponse)(nil),            // 6: ducklingdb.proto.SQLResponse
+	(*Info)(nil),                   // 7: ducklingdb.proto.Info
+	(*GossipMessage)(nil),          // 8: ducklingdb.proto.GossipMessage
+	nil,                            // 9: ducklingdb.proto.GossipMessage.DeltaEntry
+	nil,                            // 10: ducklingdb.proto.GossipMessage.HighWaterEntry
+	(*Timestamp)(nil),              // 11: ducklingdb.proto.Timestamp
+	(*BatchRequest)(nil),           // 12: ducklingdb.proto.BatchRequest
+	(*RaftMessage)(nil),            // 13: ducklingdb.proto.RaftMessage
+	(*BatchResponse)(nil),          // 14: ducklingdb.proto.BatchResponse
+	(*RaftMessageResponse)(nil),    // 15: ducklingdb.proto.RaftMessageResponse
 }
 var file_internal_proto_service_proto_depIdxs = []int32{
-	8,  // 0: ducklingdb.proto.PingRequest.server_time:type_name -> ducklingdb.proto.Timestamp
-	8,  // 1: ducklingdb.proto.PingResponse.server_time:type_name -> ducklingdb.proto.Timestamp
-	6,  // 2: ducklingdb.proto.GossipMessage.delta:type_name -> ducklingdb.proto.GossipMessage.DeltaEntry
-	7,  // 3: ducklingdb.proto.GossipMessage.high_water:type_name -> ducklingdb.proto.GossipMessage.HighWaterEntry
-	4,  // 4: ducklingdb.proto.GossipMessage.DeltaEntry.value:type_name -> ducklingdb.proto.Info
-	9,  // 5: ducklingdb.proto.Internal.Batch:input_type -> ducklingdb.proto.BatchRequest
-	2,  // 6: ducklingdb.proto.Internal.Heartbeat:input_type -> ducklingdb.proto.PingRequest
-	0,  // 7: ducklingdb.proto.Internal.AllocateNodeID:input_type -> ducklingdb.proto.AllocateNodeIDRequest
-	5,  // 8: ducklingdb.proto.GossipService.Gossip:input_type -> ducklingdb.proto.GossipMessage
-	10, // 9: ducklingdb.proto.RaftService.Step:input_type -> ducklingdb.proto.RaftMessage
-	11, // 10: ducklingdb.proto.Internal.Batch:output_type -> ducklingdb.proto.BatchResponse
-	3,  // 11: ducklingdb.proto.Internal.Heartbeat:output_type -> ducklingdb.proto.PingResponse
-	1,  // 12: ducklingdb.proto.Internal.AllocateNodeID:output_type -> ducklingdb.proto.AllocateNodeIDResponse
-	5,  // 13: ducklingdb.proto.GossipService.Gossip:output_type -> ducklingdb.proto.GossipMessage
-	12, // 14: ducklingdb.proto.RaftService.Step:output_type -> ducklingdb.proto.RaftMessageResponse
-	10, // [10:15] is the sub-list for method output_type
-	5,  // [5:10] is the sub-list for method input_type
-	5,  // [5:5] is the sub-list for extension type_name
-	5,  // [5:5] is the sub-list for extension extendee
-	0,  // [0:5] is the sub-list for field type_name
+	11, // 0: ducklingdb.proto.PingRequest.server_time:type_name -> ducklingdb.proto.Timestamp
+	11, // 1: ducklingdb.proto.PingResponse.server_time:type_name -> ducklingdb.proto.Timestamp
+	5,  // 2: ducklingdb.proto.SQLResponse.rows:type_name -> ducklingdb.proto.SQLRow
+	9,  // 3: ducklingdb.proto.GossipMessage.delta:type_name -> ducklingdb.proto.GossipMessage.DeltaEntry
+	10, // 4: ducklingdb.proto.GossipMessage.high_water:type_name -> ducklingdb.proto.GossipMessage.HighWaterEntry
+	7,  // 5: ducklingdb.proto.GossipMessage.DeltaEntry.value:type_name -> ducklingdb.proto.Info
+	12, // 6: ducklingdb.proto.Internal.Batch:input_type -> ducklingdb.proto.BatchRequest
+	2,  // 7: ducklingdb.proto.Internal.Heartbeat:input_type -> ducklingdb.proto.PingRequest
+	0,  // 8: ducklingdb.proto.Internal.AllocateNodeID:input_type -> ducklingdb.proto.AllocateNodeIDRequest
+	4,  // 9: ducklingdb.proto.Internal.ExecSQL:input_type -> ducklingdb.proto.SQLRequest
+	8,  // 10: ducklingdb.proto.GossipService.Gossip:input_type -> ducklingdb.proto.GossipMessage
+	13, // 11: ducklingdb.proto.RaftService.Step:input_type -> ducklingdb.proto.RaftMessage
+	14, // 12: ducklingdb.proto.Internal.Batch:output_type -> ducklingdb.proto.BatchResponse
+	3,  // 13: ducklingdb.proto.Internal.Heartbeat:output_type -> ducklingdb.proto.PingResponse
+	1,  // 14: ducklingdb.proto.Internal.AllocateNodeID:output_type -> ducklingdb.proto.AllocateNodeIDResponse
+	6,  // 15: ducklingdb.proto.Internal.ExecSQL:output_type -> ducklingdb.proto.SQLResponse
+	8,  // 16: ducklingdb.proto.GossipService.Gossip:output_type -> ducklingdb.proto.GossipMessage
+	15, // 17: ducklingdb.proto.RaftService.Step:output_type -> ducklingdb.proto.RaftMessageResponse
+	12, // [12:18] is the sub-list for method output_type
+	6,  // [6:12] is the sub-list for method input_type
+	6,  // [6:6] is the sub-list for extension type_name
+	6,  // [6:6] is the sub-list for extension extendee
+	0,  // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_internal_proto_service_proto_init() }
@@ -480,7 +653,7 @@ func file_internal_proto_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_proto_service_proto_rawDesc), len(file_internal_proto_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   3,
 		},

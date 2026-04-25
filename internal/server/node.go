@@ -16,6 +16,7 @@ import (
 	pb "github.com/duchm1606/ducklingdb/internal/proto"
 	"github.com/duchm1606/ducklingdb/internal/raft"
 	"github.com/duchm1606/ducklingdb/internal/rpc"
+	"github.com/duchm1606/ducklingdb/internal/sql/executor"
 	"github.com/duchm1606/ducklingdb/internal/storage"
 	"github.com/duchm1606/ducklingdb/internal/storage/lsm"
 	"github.com/duchm1606/ducklingdb/internal/util/hlc"
@@ -155,6 +156,7 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 		batch:     kvserver.NewBatchHandler(engine, clock),
 		allocator: allocator,
 		clusterID: clusterID,
+		node:      n,
 	}
 	pb.RegisterInternalServer(srv.GRPCServer(), svc)
 	pb.RegisterGossipServiceServer(srv.GRPCServer(), g)
@@ -328,6 +330,7 @@ type nodeServer struct {
 	batch     *kvserver.BatchHandler
 	allocator *NodeIDAllocator
 	clusterID ClusterID
+	node      *Node
 }
 
 func (s *nodeServer) Heartbeat(ctx context.Context, req *pb.PingRequest) (*pb.PingResponse, error) {
@@ -346,5 +349,42 @@ func (s *nodeServer) AllocateNodeID(_ context.Context, _ *pb.AllocateNodeIDReque
 	return &pb.AllocateNodeIDResponse{
 		NodeId:    int32(id),
 		ClusterId: s.clusterID[:],
+	}, nil
+}
+
+func (s *nodeServer) ExecSQL(ctx context.Context, req *pb.SQLRequest) (*pb.SQLResponse, error) {
+	r := s.node.getReplica()
+	var exec *executor.Executor
+	if r != nil {
+		sender := func(sctx context.Context, batch *pb.BatchRequest) (*pb.BatchResponse, error) {
+			if r.Lead() != uint64(s.node.NodeID()) {
+				return nil, fmt.Errorf("not the leader (leader is node %d)", r.Lead())
+			}
+			data, err := proto.Marshal(batch)
+			if err != nil {
+				return nil, err
+			}
+			if err := r.Propose(sctx, data); err != nil {
+				return nil, err
+			}
+			return &pb.BatchResponse{}, nil
+		}
+		exec = executor.NewWithSender(s.node.engine, s.node.clock, sender)
+	} else {
+		exec = executor.New(s.node.engine, s.node.clock)
+	}
+
+	result, err := exec.Execute(req.Sql)
+	if err != nil {
+		return &pb.SQLResponse{Error: err.Error()}, nil
+	}
+	rows := make([]*pb.SQLRow, len(result.Rows))
+	for i, row := range result.Rows {
+		rows[i] = &pb.SQLRow{Values: row}
+	}
+	return &pb.SQLResponse{
+		Columns: result.Columns,
+		Rows:    rows,
+		Message: result.Message,
 	}, nil
 }

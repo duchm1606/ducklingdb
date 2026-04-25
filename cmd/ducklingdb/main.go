@@ -180,11 +180,17 @@ func runStatus(args []string) {
 
 func runRepl(args []string) {
 	fs := flag.NewFlagSet("repl", flag.ExitOnError)
-	dataDir := fs.String("data", "", "data directory (required)")
+	dataDir := fs.String("data", "", "data directory (local engine mode)")
+	addr := fs.String("addr", "", "node address to connect to via gRPC (remote mode)")
 	fs.Parse(args)
 
+	if *addr != "" {
+		runReplRemote(*addr)
+		return
+	}
+
 	if *dataDir == "" {
-		fmt.Fprintf(os.Stderr, "error: --data is required\n")
+		fmt.Fprintf(os.Stderr, "error: --data or --addr is required\n")
 		os.Exit(1)
 	}
 
@@ -220,6 +226,62 @@ func runRepl(args []string) {
 			printTable(res)
 		} else {
 			fmt.Fprintln(os.Stdout, res.Message)
+		}
+	}
+}
+
+func runReplRemote(addr string) {
+	if strings.HasPrefix(addr, ":") {
+		addr = "127.0.0.1" + addr
+	}
+	rpcCtx := rpc.NewContext()
+	defer rpcCtx.Close()
+
+	conn, err := rpcCtx.GRPCDialNode(addr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: dial %s: %v\n", addr, err)
+		os.Exit(1)
+	}
+	client := pb.NewInternalClient(conn)
+
+	fmt.Printf("Connected to %s\n", addr)
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		fmt.Fprint(os.Stdout, "duck> ")
+		if !scanner.Scan() {
+			break
+		}
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if line == `\q` || line == `\quit` {
+			break
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		resp, err := client.ExecSQL(ctx, &pb.SQLRequest{Sql: line})
+		cancel()
+		if err != nil {
+			fmt.Fprintf(os.Stdout, "ERROR: %v\n", err)
+			continue
+		}
+		if resp.Error != "" {
+			fmt.Fprintf(os.Stdout, "ERROR: %s\n", resp.Error)
+			continue
+		}
+		if len(resp.Columns) > 0 {
+			// Convert to executor.Result for display.
+			rows := make([][]string, len(resp.Rows))
+			for i, r := range resp.Rows {
+				rows[i] = r.Values
+			}
+			printTable(&executor.Result{
+				Columns: resp.Columns,
+				Rows:    rows,
+				Message: resp.Message,
+			})
+		} else {
+			fmt.Fprintln(os.Stdout, resp.Message)
 		}
 	}
 }

@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -8,11 +10,16 @@ import (
 
 	"github.com/auxten/postgresql-parser/pkg/sql/parser"
 	"github.com/auxten/postgresql-parser/pkg/sql/sem/tree"
+	pb "github.com/duchm1606/ducklingdb/internal/proto"
 	"github.com/duchm1606/ducklingdb/internal/sql/catalog"
 	"github.com/duchm1606/ducklingdb/internal/storage"
 	"github.com/duchm1606/ducklingdb/internal/storage/mvcc"
 	"github.com/duchm1606/ducklingdb/internal/util/hlc"
 )
+
+// BatchSender routes a write batch. When nil, writes go directly to the
+// local engine. When set, the batch is sent via Raft (or any transport).
+type BatchSender func(ctx context.Context, req *pb.BatchRequest) (*pb.BatchResponse, error)
 
 // Result holds the output of a SQL statement.
 type Result struct {
@@ -26,10 +33,17 @@ type Result struct {
 type Executor struct {
 	engine storage.Engine
 	clock  *hlc.Clock
+	sender BatchSender // nil = write directly to engine
 }
 
 func New(engine storage.Engine, clock *hlc.Clock) *Executor {
 	return &Executor{engine: engine, clock: clock}
+}
+
+// NewWithSender creates an executor that routes write operations through sender.
+// Reads (SELECT) always use the local engine.
+func NewWithSender(engine storage.Engine, clock *hlc.Clock, sender BatchSender) *Executor {
+	return &Executor{engine: engine, clock: clock, sender: sender}
 }
 
 func (e *Executor) Execute(sql string) (*Result, error) {
@@ -80,7 +94,33 @@ func (e *Executor) execCreateTable(s *tree.CreateTable) (*Result, error) {
 	if schema.PrimaryKeyColumn() == nil {
 		return nil, fmt.Errorf("table must have a PRIMARY KEY column")
 	}
-	if err := catalog.CreateTable(e.engine, schema); err != nil {
+
+	if e.sender != nil {
+		// Check duplicate locally before proposing.
+		if _, err := catalog.GetTable(e.engine, schema.Name); err == nil {
+			return nil, fmt.Errorf("table %q already exists", schema.Name)
+		}
+		data, err := json.Marshal(schema)
+		if err != nil {
+			return nil, err
+		}
+		ts := e.clock.Now()
+		req := &pb.BatchRequest{
+			Header: &pb.Header{Timestamp: pb.FromHLC(ts)},
+			Requests: []*pb.RequestUnion{{
+				Value: &pb.RequestUnion_Put{Put: &pb.PutRequest{
+					Key:   catalog.SchemaKey(schema.Name),
+					Value: &pb.Value{RawBytes: data},
+				}},
+			}},
+		}
+		if _, err := e.sender(context.Background(), req); err != nil {
+			return nil, err
+		}
+		return &Result{Message: "OK"}, nil
+	}
+
+	if err := catalog.CreateTable(e.engine, e.clock, schema); err != nil {
 		return nil, err
 	}
 	return &Result{Message: "OK"}, nil
@@ -101,6 +141,7 @@ func (e *Executor) execInsert(s *tree.Insert) (*Result, error) {
 		return nil, fmt.Errorf("INSERT: only VALUES clause supported")
 	}
 	ts := e.clock.Now()
+	var requests []*pb.RequestUnion
 	count := 0
 	for _, rowExprs := range values.Rows {
 		if len(rowExprs) != len(schema.Columns) {
@@ -123,10 +164,32 @@ func (e *Executor) execInsert(s *tree.Insert) (*Result, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := mvcc.MVCCPut(e.engine, key, ts, valBytes, nil); err != nil {
+		requests = append(requests, &pb.RequestUnion{
+			Value: &pb.RequestUnion_Put{Put: &pb.PutRequest{
+				Key:   key,
+				Value: &pb.Value{RawBytes: valBytes},
+			}},
+		})
+		count++
+	}
+
+	if e.sender != nil {
+		req := &pb.BatchRequest{
+			Header:   &pb.Header{Timestamp: pb.FromHLC(ts)},
+			Requests: requests,
+		}
+		if _, err := e.sender(context.Background(), req); err != nil {
 			return nil, err
 		}
-		count++
+		return &Result{RowsAffected: count, Message: fmt.Sprintf("INSERT %d", count)}, nil
+	}
+
+	// Direct path: write to MVCC.
+	for _, ru := range requests {
+		put := ru.Value.(*pb.RequestUnion_Put).Put
+		if err := mvcc.MVCCPut(e.engine, put.Key, ts, put.Value.RawBytes, nil); err != nil {
+			return nil, err
+		}
 	}
 	return &Result{RowsAffected: count, Message: fmt.Sprintf("INSERT %d", count)}, nil
 }
@@ -210,6 +273,24 @@ func (e *Executor) execUpdate(s *tree.Update) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	if e.sender != nil {
+		newTs := e.clock.Now()
+		req := &pb.BatchRequest{
+			Header: &pb.Header{Timestamp: pb.FromHLC(newTs)},
+			Requests: []*pb.RequestUnion{{
+				Value: &pb.RequestUnion_Put{Put: &pb.PutRequest{
+					Key:   key,
+					Value: &pb.Value{RawBytes: valBytes},
+				}},
+			}},
+		}
+		if _, err := e.sender(context.Background(), req); err != nil {
+			return nil, err
+		}
+		return &Result{RowsAffected: 1, Message: "UPDATE 1"}, nil
+	}
+
 	newTs := e.clock.Now()
 	if err := mvcc.MVCCPut(e.engine, key, newTs, valBytes, nil); err != nil {
 		return nil, err
@@ -240,6 +321,20 @@ func (e *Executor) execDelete(s *tree.Delete) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	if e.sender != nil {
+		req := &pb.BatchRequest{
+			Header: &pb.Header{Timestamp: pb.FromHLC(ts)},
+			Requests: []*pb.RequestUnion{{
+				Value: &pb.RequestUnion_Delete{Delete: &pb.DeleteRequest{Key: key}},
+			}},
+		}
+		if _, err := e.sender(context.Background(), req); err != nil {
+			return nil, err
+		}
+		return &Result{RowsAffected: 1, Message: "DELETE 1"}, nil
+	}
+
 	if err := mvcc.MVCCDelete(e.engine, key, ts, nil); err != nil {
 		return nil, err
 	}
