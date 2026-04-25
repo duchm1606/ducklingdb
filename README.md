@@ -114,7 +114,7 @@ DucklingDB is heavily inspired by [CockroachDB](https://github.com/cockroachdb/c
 - Gossip-based cluster membership and node liveness tracking
 - BatchRequest / BatchResponse as the uniform write path through Raft
 
-The [CockroachDB design docs](https://github.com/cockroachdb/cockroach/tree/master/docs/design) and the Cockroach Labs engineering blog were invaluable references throughout.
+The [CockroachDB design docs](https://github.com/cockroachdb/cockroach/blob/master/docs/design.md) and the Cockroach Labs engineering blog were invaluable references throughout.
 
 ## License
 
