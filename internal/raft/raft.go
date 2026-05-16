@@ -58,7 +58,15 @@ func NewRawNode(id uint64, peers []uint64, storage LogStorage) *RawNode {
 		rn.term = hs.Term
 		rn.votedFor = hs.VotedFor
 		rn.log.commitTo(hs.Commit)
-		rn.log.appliedTo(hs.Commit)
+		// Use the durably saved applied index, not committed. If a crash happened
+		// between persisting the commit and applying entries to the state machine,
+		// applied < committed and nextEntries() will surface the missing entries
+		// for re-application on this startup.
+		persisted, _ := storage.LoadApplied()
+		if persisted > hs.Commit {
+			persisted = hs.Commit // defensive: applied can never exceed committed
+		}
+		rn.log.appliedTo(persisted)
 	}
 	rn.prevHard = rn.hardState()
 	rn.prevSoft = rn.softState()

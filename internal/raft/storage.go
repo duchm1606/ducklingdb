@@ -11,6 +11,7 @@ import (
 
 var (
 	keyRaftHardState = []byte("\x00raft/hardstate")
+	keyRaftApplied   = []byte("\x00raft/applied")
 	keyRaftLogPrefix = []byte("\x00raft/log/")
 )
 
@@ -107,6 +108,26 @@ func (s *LSMLogStorage) Entries(lo, hi uint64) ([]Entry, error) {
 		result = append(result, e)
 	}
 	return result, nil
+}
+
+func (s *LSMLogStorage) SaveApplied(index uint64) error {
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, index)
+	return s.eng.Put(keyRaftApplied, buf)
+}
+
+func (s *LSMLogStorage) LoadApplied() (uint64, error) {
+	data, err := s.eng.Get(keyRaftApplied)
+	if err != nil {
+		if errors.Is(err, storage.ErrKeyNotFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if len(data) != 8 {
+		return 0, nil
+	}
+	return binary.BigEndian.Uint64(data), nil
 }
 
 func (s *LSMLogStorage) AppendEntries(entries []Entry) error {

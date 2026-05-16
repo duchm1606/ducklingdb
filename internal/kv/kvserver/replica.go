@@ -183,6 +183,16 @@ func (r *Replica) handleReady() {
 		r.applyEntry(entry)
 	}
 
+	// 4b. Durably record how far we have applied so that a crash between
+	// SaveHardState (which advances Commit) and here does not cause those
+	// entries to be silently skipped on restart.
+	if len(rd.CommittedEntries) > 0 {
+		last := rd.CommittedEntries[len(rd.CommittedEntries)-1]
+		if err := r.storage.SaveApplied(last.Index); err != nil {
+			log.Printf("replica %d: save applied index %d: %v", r.id, last.Index, err)
+		}
+	}
+
 	// 5. Advance
 	r.rn.Advance(rd)
 }

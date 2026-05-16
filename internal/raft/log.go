@@ -17,6 +17,11 @@ type LogStorage interface {
 	Entries(lo, hi uint64) ([]Entry, error)
 	AppendEntries(entries []Entry) error
 	SaveHardState(hs HardState) error
+	// SaveApplied durably records the last log index applied to the state machine.
+	// Called after every apply batch so crash recovery can replay missing entries.
+	SaveApplied(index uint64) error
+	// LoadApplied returns the last durably saved applied index (0 if never saved).
+	LoadApplied() (uint64, error)
 }
 
 // RaftLog manages the Raft log — a combination of stable entries (persisted

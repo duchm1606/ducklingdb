@@ -8,6 +8,7 @@ import (
 type memStorage struct {
 	hs      HardState
 	entries []Entry // entries[0] is a dummy sentinel at index 0
+	applied uint64
 }
 
 func newMemStorage() *memStorage {
@@ -42,6 +43,8 @@ func (ms *memStorage) AppendEntries(entries []Entry) error {
 	return nil
 }
 func (ms *memStorage) SaveHardState(hs HardState) error { ms.hs = hs; return nil }
+func (ms *memStorage) SaveApplied(index uint64) error    { ms.applied = index; return nil }
+func (ms *memStorage) LoadApplied() (uint64, error)      { return ms.applied, nil }
 
 func TestRaftLogAppendAndRetrieve(t *testing.T) {
 	l := newRaftLog(newMemStorage())
