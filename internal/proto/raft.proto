@@ -11,6 +11,18 @@ message RaftEntry {
   bytes  data  = 3;
 }
 
+// RaftSnapshotMetadata pins a snapshot to a specific log position.
+message RaftSnapshotMetadata {
+  uint64 index = 1; // last log index covered by this snapshot
+  uint64 term  = 2; // term of that entry
+}
+
+// RaftSnapshot is a state-machine snapshot transported on MsgSnap.
+message RaftSnapshot {
+  RaftSnapshotMetadata metadata = 1;
+  bytes data = 2;
+}
+
 // RaftMessage is a Raft protocol message sent between replicas.
 message RaftMessage {
   uint64 range_id    = 1;
@@ -24,6 +36,7 @@ message RaftMessage {
   bool   reject      = 9;
   uint64 reject_hint = 10; // follower's last log index for fast nextIndex backtrack
   repeated RaftEntry entries = 11;
+  RaftSnapshot snapshot = 12; // populated for MsgSnap
 }
 
 // RaftMessageResponse is the empty acknowledgement from Step RPC.

@@ -82,6 +82,112 @@ func (x *RaftEntry) GetData() []byte {
 	return nil
 }
 
+// RaftSnapshotMetadata pins a snapshot to a specific log position.
+type RaftSnapshotMetadata struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Index         uint64                 `protobuf:"varint,1,opt,name=index,proto3" json:"index,omitempty"` // last log index covered by this snapshot
+	Term          uint64                 `protobuf:"varint,2,opt,name=term,proto3" json:"term,omitempty"`   // term of that entry
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RaftSnapshotMetadata) Reset() {
+	*x = RaftSnapshotMetadata{}
+	mi := &file_internal_proto_raft_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RaftSnapshotMetadata) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RaftSnapshotMetadata) ProtoMessage() {}
+
+func (x *RaftSnapshotMetadata) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_proto_raft_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RaftSnapshotMetadata.ProtoReflect.Descriptor instead.
+func (*RaftSnapshotMetadata) Descriptor() ([]byte, []int) {
+	return file_internal_proto_raft_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *RaftSnapshotMetadata) GetIndex() uint64 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+func (x *RaftSnapshotMetadata) GetTerm() uint64 {
+	if x != nil {
+		return x.Term
+	}
+	return 0
+}
+
+// RaftSnapshot is a state-machine snapshot transported on MsgSnap.
+type RaftSnapshot struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Metadata      *RaftSnapshotMetadata  `protobuf:"bytes,1,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	Data          []byte                 `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RaftSnapshot) Reset() {
+	*x = RaftSnapshot{}
+	mi := &file_internal_proto_raft_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RaftSnapshot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RaftSnapshot) ProtoMessage() {}
+
+func (x *RaftSnapshot) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_proto_raft_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RaftSnapshot.ProtoReflect.Descriptor instead.
+func (*RaftSnapshot) Descriptor() ([]byte, []int) {
+	return file_internal_proto_raft_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *RaftSnapshot) GetMetadata() *RaftSnapshotMetadata {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *RaftSnapshot) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
 // RaftMessage is a Raft protocol message sent between replicas.
 type RaftMessage struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -96,13 +202,14 @@ type RaftMessage struct {
 	Reject        bool                   `protobuf:"varint,9,opt,name=reject,proto3" json:"reject,omitempty"`
 	RejectHint    uint64                 `protobuf:"varint,10,opt,name=reject_hint,json=rejectHint,proto3" json:"reject_hint,omitempty"` // follower's last log index for fast nextIndex backtrack
 	Entries       []*RaftEntry           `protobuf:"bytes,11,rep,name=entries,proto3" json:"entries,omitempty"`
+	Snapshot      *RaftSnapshot          `protobuf:"bytes,12,opt,name=snapshot,proto3" json:"snapshot,omitempty"` // populated for MsgSnap
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RaftMessage) Reset() {
 	*x = RaftMessage{}
-	mi := &file_internal_proto_raft_proto_msgTypes[1]
+	mi := &file_internal_proto_raft_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -114,7 +221,7 @@ func (x *RaftMessage) String() string {
 func (*RaftMessage) ProtoMessage() {}
 
 func (x *RaftMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_proto_raft_proto_msgTypes[1]
+	mi := &file_internal_proto_raft_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -127,7 +234,7 @@ func (x *RaftMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RaftMessage.ProtoReflect.Descriptor instead.
 func (*RaftMessage) Descriptor() ([]byte, []int) {
-	return file_internal_proto_raft_proto_rawDescGZIP(), []int{1}
+	return file_internal_proto_raft_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *RaftMessage) GetRangeId() uint64 {
@@ -207,6 +314,13 @@ func (x *RaftMessage) GetEntries() []*RaftEntry {
 	return nil
 }
 
+func (x *RaftMessage) GetSnapshot() *RaftSnapshot {
+	if x != nil {
+		return x.Snapshot
+	}
+	return nil
+}
+
 // RaftMessageResponse is the empty acknowledgement from Step RPC.
 type RaftMessageResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -216,7 +330,7 @@ type RaftMessageResponse struct {
 
 func (x *RaftMessageResponse) Reset() {
 	*x = RaftMessageResponse{}
-	mi := &file_internal_proto_raft_proto_msgTypes[2]
+	mi := &file_internal_proto_raft_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -228,7 +342,7 @@ func (x *RaftMessageResponse) String() string {
 func (*RaftMessageResponse) ProtoMessage() {}
 
 func (x *RaftMessageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_proto_raft_proto_msgTypes[2]
+	mi := &file_internal_proto_raft_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -241,7 +355,7 @@ func (x *RaftMessageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RaftMessageResponse.ProtoReflect.Descriptor instead.
 func (*RaftMessageResponse) Descriptor() ([]byte, []int) {
-	return file_internal_proto_raft_proto_rawDescGZIP(), []int{2}
+	return file_internal_proto_raft_proto_rawDescGZIP(), []int{4}
 }
 
 var File_internal_proto_raft_proto protoreflect.FileDescriptor
@@ -252,7 +366,13 @@ const file_internal_proto_raft_proto_rawDesc = "" +
 	"\tRaftEntry\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x04R\x04term\x12\x14\n" +
 	"\x05index\x18\x02 \x01(\x04R\x05index\x12\x12\n" +
-	"\x04data\x18\x03 \x01(\fR\x04data\"\xad\x02\n" +
+	"\x04data\x18\x03 \x01(\fR\x04data\"@\n" +
+	"\x14RaftSnapshotMetadata\x12\x14\n" +
+	"\x05index\x18\x01 \x01(\x04R\x05index\x12\x12\n" +
+	"\x04term\x18\x02 \x01(\x04R\x04term\"f\n" +
+	"\fRaftSnapshot\x12B\n" +
+	"\bmetadata\x18\x01 \x01(\v2&.ducklingdb.proto.RaftSnapshotMetadataR\bmetadata\x12\x12\n" +
+	"\x04data\x18\x02 \x01(\fR\x04data\"\xe9\x02\n" +
 	"\vRaftMessage\x12\x19\n" +
 	"\brange_id\x18\x01 \x01(\x04R\arangeId\x12\x12\n" +
 	"\x04from\x18\x02 \x01(\x04R\x04from\x12\x0e\n" +
@@ -266,7 +386,8 @@ const file_internal_proto_raft_proto_rawDesc = "" +
 	"\vreject_hint\x18\n" +
 	" \x01(\x04R\n" +
 	"rejectHint\x125\n" +
-	"\aentries\x18\v \x03(\v2\x1b.ducklingdb.proto.RaftEntryR\aentries\"\x15\n" +
+	"\aentries\x18\v \x03(\v2\x1b.ducklingdb.proto.RaftEntryR\aentries\x12:\n" +
+	"\bsnapshot\x18\f \x01(\v2\x1e.ducklingdb.proto.RaftSnapshotR\bsnapshot\"\x15\n" +
 	"\x13RaftMessageResponseB0Z.github.com/duchm1606/ducklingdb/internal/protob\x06proto3"
 
 var (
@@ -281,19 +402,23 @@ func file_internal_proto_raft_proto_rawDescGZIP() []byte {
 	return file_internal_proto_raft_proto_rawDescData
 }
 
-var file_internal_proto_raft_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_internal_proto_raft_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_internal_proto_raft_proto_goTypes = []any{
-	(*RaftEntry)(nil),           // 0: ducklingdb.proto.RaftEntry
-	(*RaftMessage)(nil),         // 1: ducklingdb.proto.RaftMessage
-	(*RaftMessageResponse)(nil), // 2: ducklingdb.proto.RaftMessageResponse
+	(*RaftEntry)(nil),            // 0: ducklingdb.proto.RaftEntry
+	(*RaftSnapshotMetadata)(nil), // 1: ducklingdb.proto.RaftSnapshotMetadata
+	(*RaftSnapshot)(nil),         // 2: ducklingdb.proto.RaftSnapshot
+	(*RaftMessage)(nil),          // 3: ducklingdb.proto.RaftMessage
+	(*RaftMessageResponse)(nil),  // 4: ducklingdb.proto.RaftMessageResponse
 }
 var file_internal_proto_raft_proto_depIdxs = []int32{
-	0, // 0: ducklingdb.proto.RaftMessage.entries:type_name -> ducklingdb.proto.RaftEntry
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	1, // 0: ducklingdb.proto.RaftSnapshot.metadata:type_name -> ducklingdb.proto.RaftSnapshotMetadata
+	0, // 1: ducklingdb.proto.RaftMessage.entries:type_name -> ducklingdb.proto.RaftEntry
+	2, // 2: ducklingdb.proto.RaftMessage.snapshot:type_name -> ducklingdb.proto.RaftSnapshot
+	3, // [3:3] is the sub-list for method output_type
+	3, // [3:3] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_internal_proto_raft_proto_init() }
@@ -307,7 +432,7 @@ func file_internal_proto_raft_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_proto_raft_proto_rawDesc), len(file_internal_proto_raft_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

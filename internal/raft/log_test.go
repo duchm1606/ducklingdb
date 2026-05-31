@@ -5,46 +5,90 @@ import (
 )
 
 // memStorage is a minimal in-memory LogStorage for tests.
+//
+// entries[0] is a sentinel whose Index records the lowest queryable index in
+// the live log (entries above the compacted range). After a snapshot the
+// sentinel's Index advances to snap.Metadata.Index and its Term matches —
+// so Term(snap.Index) keeps answering correctly.
 type memStorage struct {
 	hs      HardState
-	entries []Entry // entries[0] is a dummy sentinel at index 0
+	entries []Entry
 	applied uint64
+	snap    Snapshot
 }
 
 func newMemStorage() *memStorage {
 	return &memStorage{entries: []Entry{{Term: 0, Index: 0}}}
 }
 
+func (ms *memStorage) baseIndex() uint64 { return ms.entries[0].Index }
+
 func (ms *memStorage) InitialState() (HardState, error) { return ms.hs, nil }
-func (ms *memStorage) FirstIndex() (uint64, error)       { return uint64(1), nil }
+func (ms *memStorage) FirstIndex() (uint64, error)      { return ms.baseIndex() + 1, nil }
 func (ms *memStorage) LastIndex() (uint64, error) {
-	return uint64(len(ms.entries) - 1), nil
+	return ms.baseIndex() + uint64(len(ms.entries)-1), nil
 }
 func (ms *memStorage) Term(index uint64) (uint64, error) {
-	if index >= uint64(len(ms.entries)) {
+	base := ms.baseIndex()
+	if index < base {
+		return 0, ErrCompacted
+	}
+	off := int(index - base)
+	if off >= len(ms.entries) {
 		return 0, errUnavailable
 	}
-	return ms.entries[index].Term, nil
+	return ms.entries[off].Term, nil
 }
 func (ms *memStorage) Entries(lo, hi uint64) ([]Entry, error) {
-	if lo < 1 || hi > uint64(len(ms.entries)) {
+	base := ms.baseIndex()
+	if lo <= base {
+		return nil, ErrCompacted
+	}
+	off := int(lo - base)
+	end := int(hi - base)
+	if end > len(ms.entries) {
 		return nil, errUnavailable
 	}
-	return ms.entries[lo:hi], nil
+	return ms.entries[off:end], nil
 }
 func (ms *memStorage) AppendEntries(entries []Entry) error {
+	base := ms.baseIndex()
 	for _, e := range entries {
-		if uint64(len(ms.entries)) <= e.Index {
+		off := int(e.Index - base)
+		switch {
+		case off <= 0:
+			// At or below the sentinel — already covered by snapshot, skip.
+		case off >= len(ms.entries):
 			ms.entries = append(ms.entries, e)
-		} else {
-			ms.entries[e.Index] = e
+		default:
+			ms.entries[off] = e
 		}
 	}
 	return nil
 }
 func (ms *memStorage) SaveHardState(hs HardState) error { ms.hs = hs; return nil }
-func (ms *memStorage) SaveApplied(index uint64) error    { ms.applied = index; return nil }
-func (ms *memStorage) LoadApplied() (uint64, error)      { return ms.applied, nil }
+func (ms *memStorage) SaveApplied(index uint64) error   { ms.applied = index; return nil }
+func (ms *memStorage) LoadApplied() (uint64, error)     { return ms.applied, nil }
+func (ms *memStorage) Snapshot() (Snapshot, error)      { return ms.snap, nil }
+func (ms *memStorage) SaveSnapshot(snap Snapshot) error {
+	ms.snap = snap
+	return nil
+}
+func (ms *memStorage) Compact(compactIndex uint64) error {
+	base := ms.baseIndex()
+	if compactIndex <= base {
+		return nil
+	}
+	// Slide the live window forward; new sentinel carries the snapshot's term.
+	off := int(compactIndex - base)
+	if off >= len(ms.entries) {
+		ms.entries = []Entry{{Term: ms.snap.Metadata.Term, Index: compactIndex}}
+		return nil
+	}
+	rest := append([]Entry{}, ms.entries[off+1:]...)
+	ms.entries = append([]Entry{{Term: ms.snap.Metadata.Term, Index: compactIndex}}, rest...)
+	return nil
+}
 
 func TestRaftLogAppendAndRetrieve(t *testing.T) {
 	l := newRaftLog(newMemStorage())

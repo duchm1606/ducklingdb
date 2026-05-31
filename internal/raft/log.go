@@ -5,7 +5,13 @@ import (
 	"fmt"
 )
 
-var errUnavailable = errors.New("raft: log entry unavailable")
+var (
+	errUnavailable = errors.New("raft: log entry unavailable")
+	// ErrCompacted is returned when a caller requests log data that has been
+	// compacted away by a snapshot. The caller should fall back to a snapshot
+	// transfer.
+	ErrCompacted = errors.New("raft: log compacted")
+)
 
 // LogStorage is the stable storage interface for the Raft log.
 // Implemented by LSMLogStorage; also by memStorage in tests.
@@ -22,16 +28,34 @@ type LogStorage interface {
 	SaveApplied(index uint64) error
 	// LoadApplied returns the last durably saved applied index (0 if never saved).
 	LoadApplied() (uint64, error)
+	// Snapshot returns the most recent persisted snapshot, or the zero
+	// Snapshot if none exists.
+	Snapshot() (Snapshot, error)
+	// SaveSnapshot persists snap. After this returns, FirstIndex must report
+	// snap.Metadata.Index + 1 and Term(snap.Metadata.Index) must return
+	// snap.Metadata.Term. Existing log entries are not deleted; callers
+	// follow up with Compact to reclaim space.
+	SaveSnapshot(snap Snapshot) error
+	// Compact removes log entries with index ≤ compactIndex. Idempotent.
+	// Must only be called after a snapshot at compactIndex (or later) has
+	// been saved, otherwise the log would lose entries the state machine
+	// has not yet captured.
+	Compact(compactIndex uint64) error
 }
 
 // RaftLog manages the Raft log — a combination of stable entries (persisted
 // in LogStorage) and unstable entries (in memory, awaiting persistence).
+//
+// pendingSnapshot is non-empty when a leader has sent us a snapshot via
+// MsgSnap. The caller drains it via Ready() and applies it to the state
+// machine; Advance() clears it.
 type RaftLog struct {
-	storage   LogStorage
-	unstable  []Entry  // entries not yet persisted to LogStorage
-	offset    uint64   // last persisted index
-	committed uint64
-	applied   uint64
+	storage         LogStorage
+	unstable        []Entry // entries not yet persisted to LogStorage
+	offset          uint64  // last persisted index
+	committed       uint64
+	applied         uint64
+	pendingSnapshot Snapshot
 }
 
 func newRaftLog(storage LogStorage) *RaftLog {
@@ -43,9 +67,13 @@ func newRaftLog(storage LogStorage) *RaftLog {
 	if err != nil {
 		firstIdx = 1
 	}
-	committed := firstIdx - 1 // nothing committed until HardState says so
+	// Floor for committed/applied: a node restarting after a snapshot has
+	// implicitly committed and applied everything up through the snapshot's
+	// anchor index. HardState's Commit may bump us higher.
+	floor := firstIdx - 1
+	committed := floor
 	hs, hsErr := storage.InitialState()
-	if hsErr == nil && hs.Commit >= firstIdx && hs.Commit <= lastIdx {
+	if hsErr == nil && hs.Commit > committed && hs.Commit <= lastIdx {
 		committed = hs.Commit
 	}
 	return &RaftLog{
@@ -53,16 +81,65 @@ func newRaftLog(storage LogStorage) *RaftLog {
 		unstable:  nil,
 		offset:    lastIdx,
 		committed: committed,
-		applied:   committed,
+		applied:   floor,
 	}
 }
 
-// lastIndex returns the index of the last entry (stable or unstable).
+// firstIndex returns the smallest log index still independently readable.
+// Indices below this are covered by a snapshot.
+func (l *RaftLog) firstIndex() uint64 {
+	idx, _ := l.storage.FirstIndex()
+	return idx
+}
+
+// hasPendingSnapshot reports whether a snapshot is waiting to be applied.
+func (l *RaftLog) hasPendingSnapshot() bool {
+	return !l.pendingSnapshot.IsEmpty()
+}
+
+// restore prepares the log to receive a snapshot. The caller (RawNode)
+// invokes this when MsgSnap arrives. The snapshot becomes pendingSnapshot,
+// committed/applied bump to the snapshot's index, and any unstable entries
+// at or below the snapshot index are dropped.
+//
+// Returns false if the snapshot does not advance us — we already have an
+// entry at or past snap.Index whose term matches snap.Term. In that case
+// the leader's snapshot is redundant; we can keep replicating via the log.
+func (l *RaftLog) restore(snap Snapshot) bool {
+	if snap.Metadata.Index <= l.committed {
+		// We've already committed past this snapshot.
+		return false
+	}
+	l.pendingSnapshot = snap
+	l.committed = snap.Metadata.Index
+	if l.applied < snap.Metadata.Index {
+		l.applied = snap.Metadata.Index
+	}
+	// Drop any unstable entries at or below the snapshot — the snapshot
+	// supersedes them. Anything strictly above stays valid.
+	if len(l.unstable) > 0 {
+		i := 0
+		for i < len(l.unstable) && l.unstable[i].Index <= snap.Metadata.Index {
+			i++
+		}
+		l.unstable = l.unstable[i:]
+	}
+	if l.offset < snap.Metadata.Index {
+		l.offset = snap.Metadata.Index
+	}
+	return true
+}
+
+// lastIndex returns the index of the last entry (stable, unstable, or covered
+// by a pending snapshot).
 func (l *RaftLog) lastIndex() uint64 {
 	if n := len(l.unstable); n > 0 {
 		return l.unstable[n-1].Index
 	}
 	idx, _ := l.storage.LastIndex()
+	if l.pendingSnapshot.Metadata.Index > idx {
+		return l.pendingSnapshot.Metadata.Index
+	}
 	return idx
 }
 
@@ -72,7 +149,8 @@ func (l *RaftLog) lastTerm() uint64 {
 	return t
 }
 
-// term returns the term of the entry at index, searching unstable first.
+// term returns the term of the entry at index, searching unstable first, then
+// pendingSnapshot, then stable storage.
 func (l *RaftLog) term(index uint64) (uint64, error) {
 	if index == 0 {
 		return 0, nil
@@ -84,6 +162,11 @@ func (l *RaftLog) term(index uint64) (uint64, error) {
 		if index >= first && index <= last {
 			return l.unstable[index-first].Term, nil
 		}
+	}
+	// The pending snapshot answers for its anchor index — its underlying
+	// log entry may have been compacted away on the leader's side.
+	if !l.pendingSnapshot.IsEmpty() && index == l.pendingSnapshot.Metadata.Index {
+		return l.pendingSnapshot.Metadata.Term, nil
 	}
 	// Fallback to stable storage
 	return l.storage.Term(index)

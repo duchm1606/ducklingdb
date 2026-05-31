@@ -3,6 +3,7 @@ package kvserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -156,7 +157,22 @@ func (r *Replica) handleReady() {
 		}
 	}
 
-	// 2. Persist Entries and assign pending proposal done channels
+	// 2. Install snapshot if one is pending.
+	// Order matters: snapshot before entries — the snapshot represents state
+	// up through some index, and any unstable entries above it are layered on
+	// top by Raft's normal append path.
+	if !rd.Snapshot.IsEmpty() {
+		if err := r.installSnapshot(rd.Snapshot); err != nil {
+			log.Printf("replica %d: install snapshot at index %d: %v",
+				r.id, rd.Snapshot.Metadata.Index, err)
+		} else {
+			log.Printf("replica %d: installed snapshot at index %d term %d (%d bytes)",
+				r.id, rd.Snapshot.Metadata.Index, rd.Snapshot.Metadata.Term,
+				len(rd.Snapshot.Data))
+		}
+	}
+
+	// 3. Persist Entries and assign pending proposal done channels
 	if len(rd.Entries) > 0 {
 		if err := r.storage.AppendEntries(rd.Entries); err != nil {
 			log.Printf("replica %d: append entries: %v", r.id, err)
@@ -173,17 +189,17 @@ func (r *Replica) handleReady() {
 		}
 	}
 
-	// 3. Send messages to peers
+	// 4. Send messages to peers
 	if len(rd.Messages) > 0 {
 		r.sendFn(rd.Messages)
 	}
 
-	// 4. Apply committed entries
+	// 5. Apply committed entries
 	for _, entry := range rd.CommittedEntries {
 		r.applyEntry(entry)
 	}
 
-	// 4b. Durably record how far we have applied so that a crash between
+	// 5b. Durably record how far we have applied so that a crash between
 	// SaveHardState (which advances Commit) and here does not cause those
 	// entries to be silently skipped on restart.
 	if len(rd.CommittedEntries) > 0 {
@@ -193,8 +209,83 @@ func (r *Replica) handleReady() {
 		}
 	}
 
-	// 5. Advance
+	// 6. Advance
 	r.rn.Advance(rd)
+}
+
+// installSnapshot wipes the state machine's user-data, applies the snapshot's
+// payload, persists the snapshot record, advances applied, and compacts the
+// log up to the snapshot's anchor index.
+//
+// The order is deliberately conservative:
+//  1. Wipe + apply: the state machine reaches the snapshot's view.
+//  2. SaveApplied(snap.Index): if we crash here, the engine has the snapshot's
+//     contents and the applied index agrees, so on restart we skip re-applying
+//     entries below the snapshot.
+//  3. SaveSnapshot: makes the snapshot durable on this replica so future
+//     restarts know about it (and Compact in step 4 is safe).
+//  4. Compact: reclaim log entries ≤ snap.Index. After this, FirstIndex moves
+//     forward.
+//
+// A crash between any two steps leaves the replica recoverable: SaveApplied
+// after SaveSnapshot would be equivalent semantically, but doing SaveApplied
+// first means a crash between (2) and (3) leaves the engine consistent with
+// the new applied index even if the snapshot record itself is missing — the
+// next leader will simply re-send the snapshot.
+func (r *Replica) installSnapshot(snap raft.Snapshot) error {
+	eng := r.batch.Engine()
+
+	if err := clearStateMachine(eng); err != nil {
+		return fmt.Errorf("wipe: %w", err)
+	}
+	if err := applyEngineSnapshot(eng, snap.Data); err != nil {
+		return fmt.Errorf("apply: %w", err)
+	}
+	if err := r.storage.SaveApplied(snap.Metadata.Index); err != nil {
+		return fmt.Errorf("save applied: %w", err)
+	}
+	if err := r.storage.SaveSnapshot(snap); err != nil {
+		return fmt.Errorf("save snapshot: %w", err)
+	}
+	if err := r.storage.Compact(snap.Metadata.Index); err != nil {
+		return fmt.Errorf("compact: %w", err)
+	}
+	return nil
+}
+
+// CreateSnapshot captures the current state of the engine as a Raft snapshot
+// at the given applied index. The caller is responsible for ensuring
+// appliedIndex matches what the state machine has applied (typically the
+// RawNode's applied watermark). Returns the snapshot's metadata.
+//
+// Concurrency: this method takes the engine's natural read view; concurrent
+// writes during snapshot creation are tolerated (the snapshot reflects the
+// engine state at some point during the serialization), but for crash
+// recovery to align cleanly the caller should quiesce writes or accept a
+// snapshot whose data may be slightly newer than appliedIndex would suggest.
+// DucklingDB's M4 single-goroutine Ready loop keeps the snapshot atomic with
+// respect to applies because CreateSnapshot runs on the same goroutine.
+func (r *Replica) CreateSnapshot(appliedIndex uint64) (raft.SnapshotMetadata, error) {
+	term, err := r.rn.LogTerm(appliedIndex)
+	if err != nil {
+		return raft.SnapshotMetadata{}, fmt.Errorf("snapshot: term for index %d: %w",
+			appliedIndex, err)
+	}
+	data, err := serializeEngineState(r.batch.Engine())
+	if err != nil {
+		return raft.SnapshotMetadata{}, err
+	}
+	snap := raft.Snapshot{
+		Metadata: raft.SnapshotMetadata{Index: appliedIndex, Term: term},
+		Data:     data,
+	}
+	if err := r.storage.SaveSnapshot(snap); err != nil {
+		return raft.SnapshotMetadata{}, fmt.Errorf("snapshot: save: %w", err)
+	}
+	if err := r.storage.Compact(appliedIndex); err != nil {
+		return raft.SnapshotMetadata{}, fmt.Errorf("snapshot: compact: %w", err)
+	}
+	return snap.Metadata, nil
 }
 
 func (r *Replica) applyEntry(entry raft.Entry) {

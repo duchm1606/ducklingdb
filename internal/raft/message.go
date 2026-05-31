@@ -22,7 +22,30 @@ const (
 	MsgHeartbeat                        // leader heartbeat
 	MsgHeartbeatResp                    // heartbeat response
 	MsgProp                             // internal: client proposal
+	MsgSnap                             // InstallSnapshot RPC
 )
+
+// SnapshotMetadata describes a snapshot's position in the log.
+// Index is the last log entry covered by the snapshot; Term is that entry's term.
+// After installing a snapshot at (Index, Term), the receiver behaves as if it
+// had committed and applied entries 1..Index, with the snapshot's Data as the
+// resulting state machine state.
+type SnapshotMetadata struct {
+	Index uint64
+	Term  uint64
+}
+
+// Snapshot bundles a state-machine snapshot with its metadata.
+// Data is the serialized state-machine bytes; opaque to Raft.
+type Snapshot struct {
+	Metadata SnapshotMetadata
+	Data     []byte
+}
+
+// IsEmpty reports whether s carries no information (zero-value snapshot).
+func (s Snapshot) IsEmpty() bool {
+	return s.Metadata.Index == 0
+}
 
 // Entry is one item in the Raft log.
 type Entry struct {
@@ -42,7 +65,8 @@ type Message struct {
 	Entries    []Entry
 	Commit     uint64 // leaderCommit
 	Reject     bool
-	RejectHint uint64 // follower's last log index (fast backtrack)
+	RejectHint uint64   // follower's last log index (fast backtrack)
+	Snapshot   Snapshot // populated for MsgSnap
 }
 
 // HardState is durable Raft state that must be persisted before responding to RPCs.
@@ -61,14 +85,20 @@ type SoftState struct {
 // Ready bundles all pending I/O work produced by one Tick or Step.
 // The caller must:
 //  1. Persist HardState (if non-empty)
-//  2. Persist Entries (before sending Messages)
-//  3. Send Messages to peers
-//  4. Apply CommittedEntries to the state machine
-//  5. Call Advance(rd)
+//  2. If Snapshot is non-empty, apply it to the state machine, persist via
+//     SaveSnapshot, and compact the log up to Snapshot.Metadata.Index.
+//  3. Persist Entries (before sending Messages)
+//  4. Send Messages to peers
+//  5. Apply CommittedEntries to the state machine
+//  6. Call Advance(rd)
+//
+// Snapshot and CommittedEntries are mutually exclusive in a single Ready —
+// a snapshot install supersedes any pending committed entries below its index.
 type Ready struct {
 	SoftState        *SoftState // non-nil only on state/lead change
 	HardState        HardState
-	Entries          []Entry // unstable entries to persist
+	Snapshot         Snapshot // non-empty when the caller must install a snapshot
+	Entries          []Entry  // unstable entries to persist
 	Messages         []Message
 	CommittedEntries []Entry
 }

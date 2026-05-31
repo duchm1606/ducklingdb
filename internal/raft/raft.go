@@ -132,8 +132,31 @@ func (rn *RawNode) bcastAppend() {
 }
 
 // sendAppend sends a MsgApp to one peer with entries from nextIndex[peer].
+// When the follower is so far behind that we no longer have the entries (they
+// were compacted by a snapshot), MsgSnap is sent instead.
 func (rn *RawNode) sendAppend(to uint64) {
 	next := rn.nextIndex[to]
+	firstIdx := rn.log.firstIndex()
+	if next < firstIdx {
+		// Follower is below our log's start — we no longer have the entries
+		// they'd need. Ship our most recent snapshot instead.
+		snap, err := rn.log.storage.Snapshot()
+		if err != nil || snap.IsEmpty() {
+			// No snapshot available; nothing we can do this round. The
+			// follower will keep failing until a snapshot is created.
+			return
+		}
+		rn.send(Message{
+			Type:     MsgSnap,
+			To:       to,
+			Term:     rn.term,
+			Snapshot: snap,
+		})
+		// Optimistically advance nextIndex past the snapshot. If the follower
+		// reports its actual last index via MsgAppResp, that wins.
+		rn.nextIndex[to] = snap.Metadata.Index + 1
+		return
+	}
 	prevIndex := next - 1
 	prevTerm, err := rn.log.term(prevIndex)
 	if err != nil {
@@ -350,6 +373,27 @@ func (rn *RawNode) Step(m Message) error {
 				rn.sendAppend(m.From)
 			}
 		}
+
+	case MsgSnap:
+		// A leader has shipped us a snapshot because our log is too far behind.
+		// Step down (we're a follower now), restore the snapshot into the log,
+		// and ack with our new last index so the leader can resume MsgApp from
+		// snap.Index + 1.
+		if m.Term < rn.term {
+			rn.send(Message{Type: MsgAppResp, To: m.From, Term: rn.term, Reject: true,
+				RejectHint: rn.log.lastIndex()})
+			return nil
+		}
+		rn.becomeFollower(m.Term, m.From)
+		if rn.log.restore(m.Snapshot) {
+			rn.send(Message{Type: MsgAppResp, To: m.From, Term: rn.term,
+				Index: rn.log.lastIndex()})
+		} else {
+			// We already have entries past this snapshot — tell the leader
+			// where we are so it can ship MsgApp from there.
+			rn.send(Message{Type: MsgAppResp, To: m.From, Term: rn.term,
+				Index: rn.log.committed})
+		}
 	}
 	return nil
 }
@@ -367,10 +411,21 @@ func (rn *RawNode) Propose(data []byte) error {
 // Lead returns the current known leader ID (0 = unknown).
 func (rn *RawNode) Lead() uint64 { return rn.leadID }
 
+// Applied returns the highest log index that has been applied to the state
+// machine. Used by snapshot creation to know what to capture.
+func (rn *RawNode) Applied() uint64 { return rn.log.applied }
+
+// LogTerm returns the term of the entry at index. Used by snapshot creation
+// to anchor a snapshot at (appliedIndex, term-of-that-entry).
+func (rn *RawNode) LogTerm(index uint64) (uint64, error) { return rn.log.term(index) }
+
 // HasReady returns true if there is pending work to process.
 func (rn *RawNode) HasReady() bool {
 	hs := rn.hardState()
 	if hs != rn.prevHard {
+		return true
+	}
+	if rn.log.hasPendingSnapshot() {
 		return true
 	}
 	if len(rn.log.unstableEntries()) > 0 {
@@ -403,6 +458,9 @@ func (rn *RawNode) Ready() Ready {
 		rd.HardState = hs
 	}
 
+	if rn.log.hasPendingSnapshot() {
+		rd.Snapshot = rn.log.pendingSnapshot
+	}
 	rd.Entries = rn.log.unstableEntries()
 	rd.Messages = rn.msgs
 	rd.CommittedEntries = rn.log.nextEntries()
@@ -417,6 +475,12 @@ func (rn *RawNode) Advance(rd Ready) {
 	}
 	if !IsEmptyHardState(rd.HardState) {
 		rn.prevHard = rd.HardState
+	}
+	if !rd.Snapshot.IsEmpty() {
+		// Caller has applied the snapshot to the state machine and persisted
+		// it via SaveSnapshot. Clear it so subsequent Ready calls don't
+		// re-emit the same snapshot.
+		rn.log.pendingSnapshot = Snapshot{}
 	}
 	if len(rd.Entries) > 0 {
 		last := rd.Entries[len(rd.Entries)-1]
