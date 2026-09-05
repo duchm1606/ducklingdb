@@ -48,6 +48,47 @@ func newTestReplica(t *testing.T, id uint64, peers []uint64, tr *testTransport) 
 	return r
 }
 
+// TestApplyErrorIsNotSwallowed pins that a command which fails to apply to the
+// state machine is reported, rather than being logged and reported as success.
+//
+// BatchHandler.Batch never returns a non-nil error: per-request failures are
+// placed in resp.Error and the error return is nil. applyEntry only checked the
+// error return, so a command that failed on every replica still signalled its
+// proposer with nil. On a follower there is no proposer at all, so a
+// deterministic apply failure left that replica silently divergent.
+func TestApplyErrorIsNotSwallowed(t *testing.T) {
+	tr := &testTransport{replicas: make(map[uint64]*Replica)}
+	r := newTestReplica(t, 1, []uint64{1}, tr)
+	r.Start()
+	t.Cleanup(r.Stop)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && r.Lead() != r.id {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if r.Lead() != r.id {
+		t.Fatal("replica did not become leader")
+	}
+
+	// A RequestUnion with no Value set hits executeSingle's default branch and
+	// fails with "unknown request type".
+	req := &pb.BatchRequest{
+		Header:   &pb.Header{Timestamp: &pb.Timestamp{WallTime: time.Now().UnixNano()}},
+		Requests: []*pb.RequestUnion{{}},
+	}
+	data, err := proto.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := r.Propose(ctx, data); err == nil {
+		t.Fatal("command failed to apply to the state machine, but Propose reported success")
+	}
+}
+
 func TestReplicaProposalApplied(t *testing.T) {
 	peers := []uint64{1, 2, 3}
 	tr := &testTransport{replicas: make(map[uint64]*Replica)}
@@ -127,5 +168,39 @@ func TestReplicaProposalApplied(t *testing.T) {
 		if string(kvs[0].Value) != "testval" {
 			t.Errorf("replica %d: got %q, want %q", id, string(kvs[0].Value), "testval")
 		}
+	}
+}
+
+// TestApplyMachineryFailureCountsAsDivergence pins the other half of the apply
+// error split: a malformed entry is an apply-machinery failure, so it must be
+// counted. Every peer will apply that entry successfully or not at all, and a
+// replica that cannot decode it is genuinely behind.
+//
+// The counter used to be incremented only in the branch where unmarshal
+// succeeded — so the one failure mode that really is divergence was the one it
+// missed.
+func TestApplyMachineryFailureCountsAsDivergence(t *testing.T) {
+	tr := &testTransport{replicas: make(map[uint64]*Replica)}
+	r := newTestReplica(t, 1, []uint64{1}, tr)
+	r.Start()
+	t.Cleanup(r.Stop)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && r.Lead() != r.id {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if r.Lead() != r.id {
+		t.Fatal("replica did not become leader")
+	}
+
+	// Not a valid BatchRequest encoding: field number 0 is illegal in protobuf.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := r.Propose(ctx, []byte{0x00, 0x01, 0x02}); err == nil {
+		t.Fatal("proposing an undecodable entry should report an error")
+	}
+
+	if got := r.ApplyErrorCount(); got == 0 {
+		t.Fatal("an entry that failed to decode must be counted as possible divergence")
 	}
 }

@@ -169,12 +169,14 @@ func TestSnapshotE2ELaggingFollowerRecovers(t *testing.T) {
 	// Give the leader time to commit on the remaining quorum.
 	time.Sleep(300 * time.Millisecond)
 
-	// 3. Leader snapshots and compacts.
-	appliedIdx := leader.rn.Applied()
-	t.Logf("leader applied=%d, creating snapshot", appliedIdx)
-	if _, err := leader.CreateSnapshot(appliedIdx); err != nil {
+	// 3. Leader snapshots and compacts. The loop picks the applied index
+	// itself, so the returned metadata is the authoritative anchor.
+	leaderMeta, err := leader.CreateSnapshot()
+	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
+	appliedIdx := leaderMeta.Index
+	t.Logf("leader snapshot anchored at applied=%d", appliedIdx)
 
 	// 4. Heal the partition. Leader's sendAppend should detect the follower
 	// is below firstIndex and ship MsgSnap instead.

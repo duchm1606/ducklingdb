@@ -2,14 +2,20 @@ package kvserver
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
+	pb "github.com/duchm1606/ducklingdb/internal/proto"
 	"github.com/duchm1606/ducklingdb/internal/raft"
 	"github.com/duchm1606/ducklingdb/internal/storage"
 	"github.com/duchm1606/ducklingdb/internal/storage/lsm"
+	"github.com/duchm1606/ducklingdb/internal/storage/mvcc"
 	"github.com/duchm1606/ducklingdb/internal/util/hlc"
+	"google.golang.org/protobuf/proto"
 )
 
 func newTestEngine(t *testing.T) *lsm.LSMEngine {
@@ -201,15 +207,200 @@ func TestReplicaInstallSnapshot(t *testing.T) {
 	}
 }
 
+// TestCreateSnapshotRoutesThroughReadyLoop proves the routing that block 2
+// exists to establish: the exported CreateSnapshot hands its work to the run()
+// goroutine and gets the result back, rather than touching the RawNode, log
+// storage and engine from the caller's goroutine.
+//
+// TestCreateSnapshotPersistsAndCompacts covers the snapshot *mechanism* by
+// calling the loop body directly on a replica that was never started, so it
+// deliberately does not exercise this path. Without this test, the serialization
+// itself would have no coverage — mechanism proven, routing unproven.
+//
+// Run under -race to be meaningful: the point is that a snapshot taken while the
+// loop is actively applying entries produces no data race.
+func TestCreateSnapshotRoutesThroughReadyLoop(t *testing.T) {
+	tr := &testTransport{replicas: make(map[uint64]*Replica)}
+	r := newTestReplica(t, 1, []uint64{1}, tr)
+	r.Start()
+	t.Cleanup(r.Stop)
+
+	// Single-node group elects itself once the election timeout fires.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && r.Lead() != r.id {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if r.Lead() != r.id {
+		t.Fatal("replica did not become leader")
+	}
+
+	// Keep the Ready loop busy applying entries for the whole call, so the
+	// snapshot genuinely overlaps with mutation of the state it reads.
+	stop := make(chan struct{})
+	done := make(chan struct{})
+
+	// Record, per key, the applied watermark observed *before* that key was
+	// proposed. A key's own log entry is necessarily at an index strictly
+	// greater than that watermark, which is what lets the assertion below
+	// survive the log compaction CreateSnapshot performs.
+	var mu sync.Mutex
+	appliedBefore := make(map[string]uint64)
+
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			key := fmt.Sprintf("bg-%04d", i)
+			before := r.AppliedIndex()
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			req := &pb.BatchRequest{
+				Header: &pb.Header{Timestamp: &pb.Timestamp{WallTime: time.Now().UnixNano()}},
+				Requests: []*pb.RequestUnion{{
+					Value: &pb.RequestUnion_Put{Put: &pb.PutRequest{
+						Key:   []byte(key),
+						Value: &pb.Value{RawBytes: []byte("v")},
+					}},
+				}},
+			}
+			data, _ := proto.Marshal(req)
+			err := r.Propose(ctx, data)
+			cancel()
+			if err == nil {
+				mu.Lock()
+				appliedBefore[key] = before
+				mu.Unlock()
+			}
+		}
+	}()
+
+	// Give the background writer time to get entries applied.
+	time.Sleep(200 * time.Millisecond)
+
+	meta, err := r.CreateSnapshot()
+
+	close(stop)
+	<-done
+
+	if err != nil {
+		t.Fatalf("CreateSnapshot via Ready loop: %v", err)
+	}
+	if meta.Index == 0 {
+		t.Fatal("snapshot anchored at index 0; nothing was applied")
+	}
+
+	snap, err := r.storage.Snapshot()
+	if err != nil {
+		t.Fatalf("read back snapshot: %v", err)
+	}
+	if snap.IsEmpty() {
+		t.Fatal("snapshot was not persisted")
+	}
+
+	// The real property: the snapshot's data must correspond to its index.
+	//
+	// Asserting `meta.Index == <the index we passed in>` was a tautology — the
+	// implementation copied the argument straight into the metadata, so no
+	// implementation could fail it.
+	//
+	// Instead: for each key in the snapshot, its log entry sits at an index
+	// strictly greater than the applied watermark observed just before it was
+	// proposed. So if that watermark is already >= the snapshot's index, the
+	// key's entry is *after* the snapshot's anchor and must not appear in the
+	// snapshot's data. That is exactly what happens when the index is sampled
+	// off-loop and the loop applies more entries before serializing.
+	mu.Lock()
+	recorded := make(map[string]uint64, len(appliedBefore))
+	for k, v := range appliedBefore {
+		recorded[k] = v
+	}
+	mu.Unlock()
+
+	for _, k := range keysInSnapshot(t, snap.Data) {
+		before, ok := recorded[k]
+		if !ok {
+			continue // proposal did not report success; no sound bound
+		}
+		if before >= meta.Index {
+			t.Fatalf("snapshot labelled index %d contains key %q, whose log entry is at an "+
+				"index > %d: snapshot data is ahead of its own index",
+				meta.Index, k, before)
+		}
+	}
+}
+
+// keysInSnapshot applies the snapshot blob to a scratch engine and returns the
+// user keys it contains.
+func keysInSnapshot(t *testing.T, data []byte) []string {
+	t.Helper()
+	scratch := newTestEngine(t)
+	if err := applyEngineSnapshot(scratch, data); err != nil {
+		t.Fatalf("apply snapshot to scratch engine: %v", err)
+	}
+	iter, err := scratch.NewIterator()
+	if err != nil {
+		t.Fatalf("scratch iterator: %v", err)
+	}
+	defer iter.Close()
+
+	seen := make(map[string]bool)
+	var keys []string
+	for ok := iter.Seek(nil); ok; ok = iter.Next() {
+		k := iter.Key()
+		if len(k) > 0 && k[0] == 0x00 {
+			continue // raft-internal keys are excluded from snapshots
+		}
+		decoded, _, err := mvcc.Decode(k)
+		if err != nil {
+			continue
+		}
+		if s := string(decoded.Key); !seen[s] {
+			seen[s] = true
+			keys = append(keys, s)
+		}
+	}
+	return keys
+}
+
+// TestCreateSnapshotStoppedReplicaDoesNotHang proves the request path fails
+// fast instead of blocking forever when there is no run() goroutine to serve it.
+func TestCreateSnapshotStoppedReplicaDoesNotHang(t *testing.T) {
+	tr := &testTransport{replicas: make(map[uint64]*Replica)}
+	r := newTestReplica(t, 1, []uint64{1}, tr)
+	r.Start()
+	r.Stop()
+
+	errC := make(chan error, 1)
+	go func() {
+		_, err := r.CreateSnapshot()
+		errC <- err
+	}()
+
+	select {
+	case err := <-errC:
+		if err == nil {
+			t.Fatal("expected an error from a stopped replica, got nil")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("CreateSnapshot hung on a stopped replica")
+	}
+}
+
 func TestCreateSnapshotPersistsAndCompacts(t *testing.T) {
 	eng := newTestEngine(t)
 	clock := hlc.NewClock(hlc.SystemWallClock(), 500*time.Millisecond)
 	storage := raft.NewLSMLogStorage(eng)
 	bh := NewBatchHandler(eng, clock)
-	rn := raft.NewRawNode(1, []uint64{1}, storage)
-	r := NewReplica(1, rn, storage, bh, func([]raft.Message) {})
 
-	// Populate the log and the engine with some state.
+	// Populate the log and the durable applied watermark *before* constructing
+	// the RawNode, which restores its applied index from storage. The snapshot
+	// index is no longer a parameter — the loop reads Applied() itself — so the
+	// precondition has to be established here rather than asserted by passing a
+	// number in.
 	entries := []raft.Entry{
 		{Term: 1, Index: 1, Data: []byte("a")},
 		{Term: 1, Index: 2, Data: []byte("b")},
@@ -219,11 +410,23 @@ func TestCreateSnapshotPersistsAndCompacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	storage.SaveHardState(raft.HardState{Term: 1, Commit: 3})
+	if err := storage.SaveApplied(3); err != nil {
+		t.Fatal(err)
+	}
 	eng.Put([]byte("user-k"), []byte("user-v"))
 
-	meta, err := r.CreateSnapshot(3)
+	rn := raft.NewRawNode(1, []uint64{1}, storage)
+	r := NewReplica(1, rn, storage, bh, func([]raft.Message) {})
+	if got := rn.Applied(); got != 3 {
+		t.Fatalf("precondition: applied want 3, got %d", got)
+	}
+
+	// This replica is never Start()ed, so there is no run() goroutine to serve
+	// the public CreateSnapshot request. Call the loop body directly: this test
+	// covers snapshot mechanics, not the concurrency routing.
+	meta, err := r.createSnapshotOnLoop()
 	if err != nil {
-		t.Fatalf("CreateSnapshot: %v", err)
+		t.Fatalf("createSnapshotOnLoop: %v", err)
 	}
 	if meta.Index != 3 {
 		t.Errorf("snapshot index want 3, got %d", meta.Index)

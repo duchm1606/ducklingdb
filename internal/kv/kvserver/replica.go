@@ -21,6 +21,40 @@ type proposalMsg struct {
 	doneCh chan error
 }
 
+// snapshotRequest asks the Ready loop to create a snapshot on the caller's
+// behalf. Snapshotting reads the RawNode, the log storage and the engine — all
+// of which run() mutates — so it must execute on the run() goroutine rather
+// than the caller's.
+//
+// The request carries no index: the loop picks the applied watermark itself.
+// Letting the caller supply one made the snapshot's label and its contents
+// disagree — see CreateSnapshot.
+type snapshotRequest struct {
+	respC chan snapshotResponse
+}
+
+type snapshotResponse struct {
+	meta raft.SnapshotMetadata
+	err  error
+}
+
+// appliedQuery asks the Ready loop for its applied watermark. Served on the
+// loop so the answer is a real read of rn.Applied() rather than a mirror that
+// can lag it.
+type appliedQuery struct {
+	respC chan uint64
+}
+
+// RequestError is a deterministic, per-request failure produced while applying
+// a command — a write-intent conflict, an unknown request type, and so on.
+//
+// Every replica applies the same committed entry and reaches the same outcome,
+// so this is a client-level error, not divergence. It is reported to the
+// proposer and deliberately not counted by ApplyErrorCount.
+type RequestError struct{ Message string }
+
+func (e *RequestError) Error() string { return e.Message }
+
 // Replica owns a RawNode and runs the Raft Ready loop.
 // It persists log entries, sends messages to peers, and applies
 // committed entries to the MVCC engine via BatchHandler.
@@ -30,10 +64,12 @@ type Replica struct {
 	storage *raft.LSMLogStorage
 	batch   *BatchHandler
 
-	propc  chan proposalMsg
-	stepc  chan raft.Message
-	stopc  chan struct{}
-	ticker *time.Ticker
+	propc    chan proposalMsg
+	stepc    chan raft.Message
+	snapc    chan snapshotRequest
+	appliedc chan appliedQuery
+	stopc    chan struct{}
+	ticker   *time.Ticker
 
 	mu      sync.Mutex
 	pending map[uint64]chan error // logIndex → done channel
@@ -50,6 +86,11 @@ type Replica struct {
 	// avoid data races with the concurrent write in handleReady().
 	leadID atomic.Uint64
 
+	// applyErrs counts entries that failed to apply because of an apply-machinery
+	// failure. Any non-zero value means this replica may have diverged from its
+	// peers. Deterministic per-request failures are excluded — see RequestError.
+	applyErrs atomic.Uint64
+
 	// stopOnce ensures Stop() is idempotent and never double-closes stopc.
 	stopOnce sync.Once
 }
@@ -58,21 +99,28 @@ type Replica struct {
 func NewReplica(id uint64, rn *raft.RawNode, storage *raft.LSMLogStorage,
 	batch *BatchHandler, sendFn func([]raft.Message)) *Replica {
 	return &Replica{
-		id:      id,
-		rn:      rn,
-		storage: storage,
-		batch:   batch,
-		propc:   make(chan proposalMsg, 16),
-		stepc:   make(chan raft.Message, 64),
-		stopc:   make(chan struct{}),
-		pending: make(map[uint64]chan error),
-		sendFn:  sendFn,
+		id:       id,
+		rn:       rn,
+		storage:  storage,
+		batch:    batch,
+		propc:    make(chan proposalMsg, 16),
+		stepc:    make(chan raft.Message, 64),
+		snapc:    make(chan snapshotRequest),
+		appliedc: make(chan appliedQuery),
+		stopc:    make(chan struct{}),
+		ticker:   time.NewTicker(tickInterval),
+		pending:  make(map[uint64]chan error),
+		sendFn:   sendFn,
 	}
 }
 
 // Start begins the Ready loop goroutine.
+//
+// The ticker is created in NewReplica, not here: Stop() reads r.ticker, and a
+// Replica can now be started from one goroutine (the peer-resolution retry) and
+// stopped from another (Node.Stop), which raced on that field. Creating it at
+// construction also means Stop() is safe on a Replica that was never started.
 func (r *Replica) Start() {
-	r.ticker = time.NewTicker(tickInterval)
 	go r.run()
 }
 
@@ -133,6 +181,11 @@ func (r *Replica) run() {
 			r.rn.Propose(prop.data)
 		case msg := <-r.stepc:
 			r.rn.Step(msg)
+		case req := <-r.snapc:
+			meta, err := r.createSnapshotOnLoop()
+			req.respC <- snapshotResponse{meta: meta, err: err}
+		case q := <-r.appliedc:
+			q.respC <- r.rn.Applied()
 		}
 		r.handleReady()
 	}
@@ -254,18 +307,68 @@ func (r *Replica) installSnapshot(snap raft.Snapshot) error {
 }
 
 // CreateSnapshot captures the current state of the engine as a Raft snapshot
-// at the given applied index. The caller is responsible for ensuring
-// appliedIndex matches what the state machine has applied (typically the
-// RawNode's applied watermark). Returns the snapshot's metadata.
+// and returns the snapshot's metadata.
 //
-// Concurrency: this method takes the engine's natural read view; concurrent
-// writes during snapshot creation are tolerated (the snapshot reflects the
-// engine state at some point during the serialization), but for crash
-// recovery to align cleanly the caller should quiesce writes or accept a
-// snapshot whose data may be slightly newer than appliedIndex would suggest.
-// DucklingDB's M4 single-goroutine Ready loop keeps the snapshot atomic with
-// respect to applies because CreateSnapshot runs on the same goroutine.
-func (r *Replica) CreateSnapshot(appliedIndex uint64) (raft.SnapshotMetadata, error) {
+// Concurrency: the work runs on the run() goroutine, not the caller's. It reads
+// the RawNode, the log storage and the engine, all of which the Ready loop
+// mutates; doing it inline on the caller's goroutine is a data race, which the
+// race detector reported as RawNode.Applied racing RaftLog.appliedTo.
+//
+// The applied index is chosen *on the loop*, which is what makes the snapshot's
+// label agree with its contents. An earlier version took the index as a
+// parameter, so callers read the watermark on their own goroutine and passed it
+// in; the loop could then apply further entries before serializing, producing a
+// snapshot labelled index N whose data reflected N+k. On install the receiver
+// set applied = N and re-applied N+1…N+k over state that already contained
+// them. That was masked only by MVCC apply happening to be idempotent.
+func (r *Replica) CreateSnapshot() (raft.SnapshotMetadata, error) {
+	respC := make(chan snapshotResponse, 1)
+	select {
+	case r.snapc <- snapshotRequest{respC: respC}:
+	case <-r.stopc:
+		return raft.SnapshotMetadata{}, errors.New("replica stopped")
+	}
+	select {
+	case resp := <-respC:
+		return resp.meta, resp.err
+	case <-r.stopc:
+		return raft.SnapshotMetadata{}, errors.New("replica stopped")
+	}
+}
+
+// AppliedIndex returns the RawNode's applied watermark, read on the run()
+// goroutine. Safe from any goroutine; reading r.rn.Applied() directly is not.
+//
+// This is a request on the loop rather than an atomic mirror updated at the end
+// of handleReady: a mirror reports 0 on a restarted-but-idle replica whose
+// durable applied index is non-zero, and lags mid-cycle.
+func (r *Replica) AppliedIndex() uint64 {
+	respC := make(chan uint64, 1)
+	select {
+	case r.appliedc <- appliedQuery{respC: respC}:
+	case <-r.stopc:
+		return 0
+	}
+	select {
+	case v := <-respC:
+		return v
+	case <-r.stopc:
+		return 0
+	}
+}
+
+// ApplyErrorCount returns how many committed entries failed to apply on this
+// replica because of an apply-machinery failure (a malformed entry, an engine
+// error). Non-zero means this replica may have diverged from its peers.
+//
+// Deterministic per-request failures are not counted here: see RequestError.
+func (r *Replica) ApplyErrorCount() uint64 { return r.applyErrs.Load() }
+
+// createSnapshotOnLoop performs the snapshot. It must only be called from
+// run(), and it reads the applied watermark itself so the snapshot's index and
+// its data are taken at the same instant.
+func (r *Replica) createSnapshotOnLoop() (raft.SnapshotMetadata, error) {
+	appliedIndex := r.rn.Applied()
 	term, err := r.rn.LogTerm(appliedIndex)
 	if err != nil {
 		return raft.SnapshotMetadata{}, fmt.Errorf("snapshot: term for index %d: %w",
@@ -288,17 +391,41 @@ func (r *Replica) CreateSnapshot(appliedIndex uint64) (raft.SnapshotMetadata, er
 	return snap.Metadata, nil
 }
 
+// applyEntry applies one committed entry to the state machine.
+//
+// An apply failure here is a divergence risk, not a client-level error: every
+// replica applies the same committed entry, so a deterministic failure leaves
+// this replica's state machine behind the others with nothing to notice it. On
+// a follower there is no waiting proposer to receive the error at all, which is
+// why the failure is also logged loudly rather than only returned.
 func (r *Replica) applyEntry(entry raft.Entry) {
 	var applyErr error
 	if len(entry.Data) > 0 {
 		var req pb.BatchRequest
 		if err := proto.Unmarshal(entry.Data, &req); err != nil {
-			log.Printf("replica %d: unmarshal entry %d: %v", r.id, entry.Index, err)
+			// Apply-machinery failure: this replica cannot apply an entry its
+			// peers will apply. That is divergence, so it is counted.
+			r.applyErrs.Add(1)
+			log.Printf("replica %d: APPLY FAILED (state machine may have diverged): unmarshal entry %d: %v",
+				r.id, entry.Index, err)
 			applyErr = err
 		} else {
-			if _, err := r.batch.Batch(context.Background(), &req); err != nil {
-				log.Printf("replica %d: apply entry %d: %v", r.id, entry.Index, err)
+			// BatchHandler.Batch reports per-request failures in resp.Error and
+			// returns a nil error, so checking only the error return misses
+			// every request-level apply failure.
+			resp, err := r.batch.Batch(context.Background(), &req)
+			switch {
+			case err != nil:
+				// Engine/machinery failure — divergence.
+				r.applyErrs.Add(1)
+				log.Printf("replica %d: APPLY FAILED (state machine may have diverged): entry %d: %v",
+					r.id, entry.Index, err)
 				applyErr = err
+			case resp != nil && resp.Error != nil:
+				// Deterministic request-level failure. Every replica reaches the
+				// same outcome, so this is a client error, not divergence: report
+				// it to the proposer but do not count or log it as divergence.
+				applyErr = &RequestError{Message: resp.Error.Message}
 			}
 		}
 	}
