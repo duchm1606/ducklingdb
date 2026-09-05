@@ -135,6 +135,41 @@ func TestNodeEngineReadWrite(t *testing.T) {
 	}
 }
 
+// waitForStableApplied waits until the replica's applied index has stopped
+// moving, then returns it.
+//
+// Sampling right after WaitForLeader is racy in the *passing* direction:
+// WaitForLeader returns as soon as Lead() != 0, but the no-op entry that
+// becomeLeader appends is applied later in that same Ready cycle. A sample
+// taken inside that window reads 0, and the no-op alone then advances the
+// index — so an `applied > appliedBefore` assertion would pass even if the
+// write under test never reached Raft.
+func waitForStableApplied(t *testing.T, n *Node, timeout time.Duration) uint64 {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last uint64
+	stable := 0
+	for time.Now().Before(deadline) {
+		r := n.getReplica()
+		if r == nil {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		cur := r.AppliedIndex()
+		if cur != 0 && cur == last {
+			if stable++; stable >= 2 {
+				return cur
+			}
+		} else {
+			stable = 0
+		}
+		last = cur
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("applied index did not stabilise within %s (last=%d)", timeout, last)
+	return 0
+}
+
 func TestBatchRPCPutAndGet(t *testing.T) {
 	n, err := NewNode(NodeConfig{
 		Addr:    ":0",
@@ -147,11 +182,19 @@ func TestBatchRPCPutAndGet(t *testing.T) {
 	n.Start()
 	defer n.Stop()
 
+	// Writes now require a committed Raft entry, so the group must have a
+	// leader before the client writes.
+	if !n.WaitForLeader(5 * time.Second) {
+		t.Fatal("raft group has no leader; writes cannot be committed")
+	}
+
 	conn, err := n.RPCContext().GRPCDialNode(n.RPCAddr())
 	if err != nil {
 		t.Fatalf("GRPCDialNode: %v", err)
 	}
 	client := pb.NewInternalClient(conn)
+
+	appliedBefore := waitForStableApplied(t, n, 5*time.Second)
 
 	putResp, err := client.Batch(context.Background(), &pb.BatchRequest{
 		Header: &pb.Header{Timestamp: &pb.Timestamp{WallTime: 100}},
@@ -167,6 +210,16 @@ func TestBatchRPCPutAndGet(t *testing.T) {
 	}
 	if putResp.Error != nil {
 		t.Fatalf("Put error: %s", putResp.Error.Message)
+	}
+
+	// The write must have been committed through Raft, not applied directly to
+	// local MVCC. Before the write path was collapsed, this test passed with
+	// nodeServer.Batch never touching Raft at all.
+	// Exactly one entry: the write under test. `>` would also be satisfied by
+	// the leader's bootstrap no-op landing late.
+	if applied := n.getReplica().AppliedIndex(); applied != appliedBefore+1 {
+		t.Fatalf("write did not go through the Raft log as exactly one entry: applied %d, want %d",
+			applied, appliedBefore+1)
 	}
 
 	getResp, err := client.Batch(context.Background(), &pb.BatchRequest{
@@ -213,11 +266,17 @@ func TestCrossNodeBatchRPC(t *testing.T) {
 	nodeB.Start()
 	defer nodeB.Stop()
 
+	if !nodeA.WaitForLeader(5 * time.Second) {
+		t.Fatal("nodeA raft group has no leader; writes cannot be committed")
+	}
+
 	conn, err := nodeB.RPCContext().GRPCDialNode(nodeA.RPCAddr())
 	if err != nil {
 		t.Fatalf("B dial A: %v", err)
 	}
 	client := pb.NewInternalClient(conn)
+
+	appliedBefore := waitForStableApplied(t, nodeA, 5*time.Second)
 
 	_, err = client.Batch(context.Background(), &pb.BatchRequest{
 		Header: &pb.Header{Timestamp: &pb.Timestamp{WallTime: 100}},
@@ -230,6 +289,15 @@ func TestCrossNodeBatchRPC(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Put A from B: %v", err)
+	}
+
+	// The write was committed through nodeA's Raft log, not written directly to
+	// its engine by the RPC handler.
+	// Exactly one entry: the write under test. `>` would also be satisfied by
+	// the leader's bootstrap no-op landing late.
+	if applied := nodeA.getReplica().AppliedIndex(); applied != appliedBefore+1 {
+		t.Fatalf("write did not go through the Raft log as exactly one entry: applied %d, want %d",
+			applied, appliedBefore+1)
 	}
 
 	getResp, err := client.Batch(context.Background(), &pb.BatchRequest{

@@ -53,16 +53,32 @@ func TestThreeNodeCluster(t *testing.T) {
 
 // TestBatchRequestAcrossNodes verifies that a BatchRequest sent to one node
 // stores a value that can then be retrieved from the same node.
+//
+// It also asserts the write was committed *through Raft* rather than written
+// directly to local MVCC. That assertion is the point: this test previously
+// passed because nodeServer.Batch bypassed Raft entirely, so it was evidence
+// against replication rather than for it.
+//
+// Note these nodes share a cluster via JoinAddrs but do not share a Raft group
+// (no Peers), so each is a one-peer group. Asserting convergence across a real
+// multi-node group needs the Peers harness and belongs with the M4 verification
+// suite.
 func TestBatchRequestAcrossNodes(t *testing.T) {
 	n1 := startNode(t, NodeConfig{Addr: ":0", DataDir: t.TempDir()})
 	n2 := startNode(t, NodeConfig{Addr: ":0", DataDir: t.TempDir(), JoinAddrs: []string{n1.RPCAddr()}})
 	_ = n2
+
+	if !n1.WaitForLeader(5 * time.Second) {
+		t.Fatal("n1 raft group has no leader; writes cannot be committed")
+	}
 
 	conn, err := n1.RPCContext().GRPCDialNode(n1.RPCAddr())
 	if err != nil {
 		t.Fatalf("dial n1: %v", err)
 	}
 	client := pb.NewInternalClient(conn)
+
+	appliedBefore := waitForStableApplied(t, n1, 5*time.Second)
 
 	// Write via n1.
 	putReq := &pb.BatchRequest{
@@ -81,6 +97,13 @@ func TestBatchRequestAcrossNodes(t *testing.T) {
 	}
 	if resp.Error != nil {
 		t.Fatalf("put error: %s", resp.Error.Message)
+	}
+
+	// Exactly one entry: the write under test. `>` would also be satisfied by
+	// the leader's bootstrap no-op landing late.
+	if applied := n1.getReplica().AppliedIndex(); applied != appliedBefore+1 {
+		t.Fatalf("write did not go through the Raft log as exactly one entry: applied %d, want %d",
+			applied, appliedBefore+1)
 	}
 
 	// Read it back.
