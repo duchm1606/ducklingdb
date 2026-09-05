@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync/atomic"
 )
 
 // SSTableReader opens an immutable SSTable file for point lookups and iteration.
@@ -15,6 +16,35 @@ type SSTableReader struct {
 	offsets []int64
 	bloom   *BloomFilter
 	count   int
+
+	// refs counts live users of this reader. The engine's level set holds one
+	// reference from OpenSSTable; every iterator built over this reader holds
+	// one more. The file handle closes only when the last reference goes.
+	//
+	// Why: reloadLevels runs after every flush and compaction and used to close
+	// readers outright, which yanked the file handle out from under any
+	// in-flight iterator. Deleting the underlying file is still safe while a
+	// handle is open — POSIX keeps the inode alive until the last fd closes.
+	refs atomic.Int32
+}
+
+// Ref pins the reader so its file handle stays open for the caller's lifetime.
+func (r *SSTableReader) Ref() { r.refs.Add(1) }
+
+// Unref releases one reference, closing the file handle when the last one goes.
+//
+// Going negative means someone released a reference they did not hold, which
+// would eventually close a file handle out from under a live iterator. That is
+// a programming error, not a runtime condition, so it panics rather than
+// silently corrupting reads.
+func (r *SSTableReader) Unref() error {
+	switch n := r.refs.Add(-1); {
+	case n > 0:
+		return nil
+	case n < 0:
+		panic("lsm: SSTableReader reference count underflow")
+	}
+	return r.fp.Close()
 }
 
 type sstableRecord struct {
@@ -83,22 +113,31 @@ func OpenSSTable(path string) (*SSTableReader, error) {
 		bloom = DecodeBloomFilter(bloomData)
 	}
 
-	return &SSTableReader{
+	r := &SSTableReader{
 		fp:      fp,
 		path:    path,
 		offsets: offsets,
 		bloom:   bloom,
 		count:   int(recordCount),
-	}, nil
+	}
+	// The caller (the engine's level set) owns the initial reference.
+	r.refs.Store(1)
+	return r, nil
 }
 
+// readRecordAt reads the record stored at a byte offset.
+//
+// This uses ReadAt rather than Seek+Read deliberately. Seek+Read mutates the
+// shared *os.File's own offset, so two goroutines iterating the same
+// SSTableReader interleave their seek/read pairs and each read part of the
+// other's record — producing keys spliced out of neighbouring values. That
+// corruption is invisible to the Go race detector because the shared state is
+// the OS file offset, not memory. os.File.ReadAt takes the offset explicitly
+// and is safe for concurrent use, which is what the storage.Iterator
+// observation contract requires now that reads and Raft applies overlap.
 func (r *SSTableReader) readRecordAt(offset int64) (*sstableRecord, error) {
-	if _, err := r.fp.Seek(offset, io.SeekStart); err != nil {
-		return nil, err
-	}
-
 	header := make([]byte, sstableRecordHeaderSize)
-	if _, err := io.ReadFull(r.fp, header); err != nil {
+	if _, err := r.fp.ReadAt(header, offset); err != nil {
 		return nil, err
 	}
 
@@ -107,13 +146,17 @@ func (r *SSTableReader) readRecordAt(offset int64) (*sstableRecord, error) {
 	tombstone := header[8] == 1
 
 	key := make([]byte, klen)
-	if _, err := io.ReadFull(r.fp, key); err != nil {
-		return nil, err
+	if klen > 0 {
+		if _, err := r.fp.ReadAt(key, offset+sstableRecordHeaderSize); err != nil {
+			return nil, err
+		}
 	}
 
 	value := make([]byte, vlen)
-	if _, err := io.ReadFull(r.fp, value); err != nil {
-		return nil, err
+	if vlen > 0 {
+		if _, err := r.fp.ReadAt(value, offset+sstableRecordHeaderSize+int64(klen)); err != nil {
+			return nil, err
+		}
 	}
 
 	return &sstableRecord{
@@ -264,7 +307,10 @@ func (it *SSTableIterator) IsTombstone() bool {
 
 func (it *SSTableIterator) Close() {}
 
-// Close releases the underlying file handle.
+// Close releases the engine's reference to this reader.
+//
+// It no longer closes the file handle unconditionally: if an iterator is still
+// reading from this reader, the handle stays open until that iterator closes.
 func (r *SSTableReader) Close() error {
-	return r.fp.Close()
+	return r.Unref()
 }

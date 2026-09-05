@@ -31,6 +31,18 @@ type Engine interface {
 
 // Iterator provides ordered iteration over key-value pairs.
 // An iterator must be positioned before reading keys or values.
+// Iterator is an ordered cursor over the engine's contents.
+//
+// Observation contract: an iterator observes a stable, point-in-time view of the
+// engine as of the moment it was created. Writes committed after that moment are
+// not visible to it, and concurrent writes, flushes, or compactions never
+// invalidate it. The caller must Close it to release the resources that view
+// pins — an unclosed iterator keeps SSTable file handles open.
+//
+// This contract is load-bearing, not aspirational: implementations must not hand
+// out a cursor over a structure that later mutates. An earlier version bound the
+// live MemTable here, which `go test -race` correctly reported as a data race
+// once the Raft apply loop began writing concurrently with scans.
 type Iterator interface {
 	// Seek positions the iterator at the first key greater than or equal to key.
 	// It returns true when the iterator points at a valid entry.

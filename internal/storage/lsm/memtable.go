@@ -3,6 +3,7 @@ package lsm
 import (
 	"bytes"
 	"math/rand"
+	"sort"
 )
 
 const maxMemTableLevel = 16
@@ -315,3 +316,91 @@ func (it *MemTableIterator) IsTombstone() bool {
 }
 
 func (it *MemTableIterator) Close() {}
+
+// memEntry is one immutable key/value/tombstone triple captured from a MemTable.
+type memEntry struct {
+	key       []byte
+	value     []byte
+	tombstone bool
+}
+
+// MemTableSnapshot is an immutable, point-in-time copy of a MemTable's contents.
+//
+// Why this exists: MemTableIterator walks the *live* skiplist. The engine binds
+// the active MemTable when an iterator is created and then keeps serving Put and
+// Delete, which relink the very nodes the iterator is walking. That is a genuine
+// data race — `go test -race` reported it as MemTable.insertNode racing
+// MemTable.seekNode — and it also lets a scan observe writes that landed after
+// the scan began.
+//
+// Copying the entries once, while the engine lock is held, gives the iterator a
+// stable view for its whole lifetime. That is the observation contract
+// storage.Iterator now documents.
+//
+// Cost: one O(n) copy per iterator, bounded by the MemTable flush threshold
+// (4 MiB by default). Sharing the key/value slices is safe because MemTable.Put
+// *reassigns* node.value rather than writing through it, so a captured slice is
+// never mutated underneath us.
+type MemTableSnapshot struct {
+	entries []memEntry
+}
+
+// Snapshot copies the MemTable's current contents in sorted order.
+//
+// The caller must hold whatever lock protects the MemTable against concurrent
+// mutation; the returned snapshot then needs no locking at all.
+func (m *MemTable) Snapshot() *MemTableSnapshot {
+	entries := make([]memEntry, 0, m.length)
+	for x := m.head.levels[0].forward; x != nil; x = x.levels[0].forward {
+		entries = append(entries, memEntry{
+			key:       x.key,
+			value:     x.value,
+			tombstone: x.tombstone,
+		})
+	}
+	return &MemTableSnapshot{entries: entries}
+}
+
+// MemTableSnapshotIterator iterates an immutable MemTableSnapshot.
+// Level-0 order in the skiplist is already sorted, so the copied slice is too.
+type MemTableSnapshotIterator struct {
+	snap *MemTableSnapshot
+	idx  int
+}
+
+func (s *MemTableSnapshot) NewIterator() *MemTableSnapshotIterator {
+	return &MemTableSnapshotIterator{snap: s, idx: -1}
+}
+
+func (it *MemTableSnapshotIterator) Seek(key []byte) bool {
+	it.idx = sort.Search(len(it.snap.entries), func(i int) bool {
+		return bytes.Compare(it.snap.entries[i].key, key) >= 0
+	})
+	return it.Valid()
+}
+
+func (it *MemTableSnapshotIterator) Next() bool {
+	if it.idx < len(it.snap.entries) {
+		it.idx++
+	}
+	return it.Valid()
+}
+
+func (it *MemTableSnapshotIterator) Prev() bool {
+	if it.idx >= 0 {
+		it.idx--
+	}
+	return it.Valid()
+}
+
+func (it *MemTableSnapshotIterator) Valid() bool {
+	return it.idx >= 0 && it.idx < len(it.snap.entries)
+}
+
+func (it *MemTableSnapshotIterator) Key() []byte { return it.snap.entries[it.idx].key }
+
+func (it *MemTableSnapshotIterator) Value() []byte { return it.snap.entries[it.idx].value }
+
+func (it *MemTableSnapshotIterator) IsTombstone() bool { return it.snap.entries[it.idx].tombstone }
+
+func (it *MemTableSnapshotIterator) Close() {}

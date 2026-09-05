@@ -259,15 +259,13 @@ func (e *LSMEngine) reloadLevels() error {
 		for j, name := range files {
 			r, err := OpenSSTable(filepath.Join(e.dir, name))
 			if err != nil {
-				// close everything we opened so far before returning
-				for k := 0; k < j; k++ {
-					_ = e.levels[i][k].Close()
-				}
-				for k := 0; k < i; k++ {
-					for _, r := range e.levels[k] {
-						_ = r.Close()
-					}
-				}
+				// Release everything opened so far and leave e.levels empty
+				// rather than half-populated. The previous hand-unwind left nil
+				// readers in e.levels (nil deref on the next Get or iterator)
+				// and left the slice in place, so a later Close() released the
+				// survivors a second time and drove their refcount negative.
+				e.levels[i] = e.levels[i][:j]
+				e.closeAllReaders()
 				return fmt.Errorf("open %q: %w", name, err)
 			}
 			e.levels[i][j] = r
@@ -290,22 +288,58 @@ func (e *LSMEngine) closeAllReaders() {
 // Lower index in the iterator slice = higher priority on key collision.
 func (e *LSMEngine) newMergedIteratorLocked() (storage.Iterator, error) {
 	iters := make([]storage.Iterator, 0, 1+e.totalSSTableCount())
-	iters = append(iters, e.mem.NewIterator())
+
+	// Snapshot the active MemTable rather than binding it. The live skiplist
+	// keeps being mutated by Put/Delete after this function returns, and the
+	// iterator outlives the lock we are holding right now.
+	iters = append(iters, e.mem.Snapshot().NewIterator())
+
+	// Pin every SSTable reader we hand to the iterator, so a concurrent flush
+	// or compaction (which calls reloadLevels → closeAllReaders) cannot close
+	// the file handle while the iterator is still reading it.
+	pinned := make([]*SSTableReader, 0, e.totalSSTableCount())
+	pin := func(r *SSTableReader) {
+		r.Ref()
+		pinned = append(pinned, r)
+		iters = append(iters, r.NewIterator())
+	}
 
 	// L0 newest-first.
 	if len(e.levels) > 0 {
 		for _, r := range e.levels[0] {
-			iters = append(iters, r.NewIterator())
+			pin(r)
 		}
 	}
 	// L1 and below.
 	for _, level := range e.levelSlice(1) {
 		for _, r := range level {
-			iters = append(iters, r.NewIterator())
+			pin(r)
 		}
 	}
 
-	return NewDeletedFilterIterator(NewMergeIterator(iters)), nil
+	return &pinnedIterator{
+		Iterator: NewDeletedFilterIterator(NewMergeIterator(iters)),
+		pinned:   pinned,
+	}, nil
+}
+
+// pinnedIterator holds references on the SSTable readers its inner iterator was
+// built over, releasing them when the iterator is closed.
+//
+// This is what makes the storage.Iterator observation contract hold: the
+// iterator sees a stable set of files for its whole lifetime, even across a
+// flush or compaction cycle.
+type pinnedIterator struct {
+	storage.Iterator
+	pinned []*SSTableReader
+}
+
+func (p *pinnedIterator) Close() {
+	p.Iterator.Close()
+	for _, r := range p.pinned {
+		_ = r.Unref()
+	}
+	p.pinned = nil
 }
 
 // levelSlice returns e.levels[from:] safely (returns nil if from >= len).
