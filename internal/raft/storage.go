@@ -37,6 +37,12 @@ func raftLogKey(index uint64) []byte {
 // LSMLogStorage persists Raft log entries and HardState in the LSM engine.
 type LSMLogStorage struct {
 	eng storage.Engine
+
+	// lastIdx caches LastIndex(). Not guarded by a mutex: LSMLogStorage is
+	// driven exclusively from the Replica's run() goroutine, the same
+	// single-threaded discipline the RawNode relies on.
+	lastIdx      uint64
+	lastIdxValid bool
 }
 
 // NewLSMLogStorage creates a LogStorage backed by the given engine.
@@ -81,7 +87,29 @@ func (s *LSMLogStorage) FirstIndex() (uint64, error) {
 	return 1, nil
 }
 
+// LastIndex returns the highest index the log can answer for.
+//
+// The result is cached. The uncached form opened an engine iterator and scanned
+// the whole raft-log key range on every call, and it is called several times per
+// Ready cycle (becomeLeader, sendAppend, MsgApp handling, MsgHeartbeatResp) at
+// 100Hz. Since an iterator now snapshots the memtable, each of those calls also
+// copied it — turning a hot path into an O(memtable) copy.
+//
+// The cache is invalidated by anything that can change the answer: AppendEntries
+// raises it, Compact and SaveSnapshot invalidate it.
 func (s *LSMLogStorage) LastIndex() (uint64, error) {
+	if s.lastIdxValid {
+		return s.lastIdx, nil
+	}
+	last, err := s.scanLastIndex()
+	if err != nil {
+		return 0, err
+	}
+	s.lastIdx, s.lastIdxValid = last, true
+	return last, nil
+}
+
+func (s *LSMLogStorage) scanLastIndex() (uint64, error) {
 	iter, err := s.eng.NewIterator()
 	if err != nil {
 		return 0, err
@@ -179,7 +207,12 @@ func (s *LSMLogStorage) AppendEntries(entries []Entry) error {
 			return err
 		}
 		if err := s.eng.Put(raftLogKey(e.Index), data); err != nil {
+			// The cache can no longer be trusted: some entries may have landed.
+			s.lastIdxValid = false
 			return err
+		}
+		if s.lastIdxValid && e.Index > s.lastIdx {
+			s.lastIdx = e.Index
 		}
 	}
 	return nil
@@ -246,6 +279,8 @@ func (s *LSMLogStorage) SaveSnapshot(snap Snapshot) error {
 	if err := s.eng.Put(keyRaftSnapshotMeta, metaBytes); err != nil {
 		return fmt.Errorf("raft: write snapshot meta: %w", err)
 	}
+	// A snapshot anchor can raise LastIndex past any live log key.
+	s.lastIdxValid = false
 	return nil
 }
 
@@ -259,6 +294,8 @@ func (s *LSMLogStorage) Compact(compactIndex uint64) error {
 	if compactIndex == 0 {
 		return nil
 	}
+	// Compaction removes log keys, so the cached maximum may no longer exist.
+	s.lastIdxValid = false
 	iter, err := s.eng.NewIterator()
 	if err != nil {
 		return err
