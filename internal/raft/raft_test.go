@@ -79,6 +79,12 @@ func TestElectionThreeNodes(t *testing.T) {
 	if leader == 0 {
 		t.Fatal("no leader elected within 50 ticks")
 	}
+	// Followers learn who the leader is from its first MsgApp (becomeLeader
+	// appends a no-op and broadcasts it), not from having voted for it — a
+	// candidate we voted for may still lose. Deliver that round before
+	// asserting agreement.
+	nt.tickAll()
+
 	// All nodes should agree on the same leader
 	for id, n := range nt.nodes {
 		if n.leadID != leader && n.state != StateCandidate {

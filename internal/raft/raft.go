@@ -107,16 +107,27 @@ func (rn *RawNode) bcastRequestVote() {
 }
 
 // bcastHeartbeat sends a heartbeat MsgHeartbeat to all peers.
+//
+// The commit index is clamped per-peer to min(matchIndex[peer], committed).
+// Telling a follower to commit past what we know it has *matching* is a safety
+// violation: a follower holding uncommitted entries from an older term at
+// higher indices would commit its own divergent entries — the receiver only
+// clamps against its own lastIndex and performs no log-match check. This
+// mirrors etcd/raft, which sends min(pr.Match, r.raftLog.committed).
 func (rn *RawNode) bcastHeartbeat() {
 	for _, id := range rn.peers {
 		if id == rn.id {
 			continue
 		}
+		commit := rn.log.committed
+		if m := rn.matchIndex[id]; m < commit {
+			commit = m
+		}
 		rn.send(Message{
 			Type:   MsgHeartbeat,
 			To:     id,
 			Term:   rn.term,
-			Commit: rn.log.committed,
+			Commit: commit,
 		})
 	}
 }
@@ -270,7 +281,12 @@ func (rn *RawNode) Step(m Message) error {
 		logOK := rn.log.isUpToDate(m.Index, m.LogTerm)
 		if m.Term >= rn.term && canGrant && logOK {
 			rn.votedFor = m.From
-			rn.leadID = m.From // optimistic: remember who we voted for as likely leader
+			// Deliberately do NOT set leadID here. A candidate we vote for may
+			// still lose the election, and leadID is what Replica.Lead()
+			// reports to clients ("leader is node N") and what gates Propose.
+			// Recording a mere candidate as leader misdirects clients until the
+			// next MsgApp corrects it. leadID is set when we actually hear from
+			// a leader (MsgApp / MsgHeartbeat).
 			rn.electionElapsed = 0
 			rn.send(Message{Type: MsgVoteResp, To: m.From, Term: rn.term})
 		} else {
