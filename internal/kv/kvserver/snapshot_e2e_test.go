@@ -20,26 +20,42 @@ import (
 // destined for a "partitioned" peer. Used to simulate a follower that misses
 // log replication so the leader has to fall back to MsgSnap on recovery.
 type gatedTransport struct {
-	mu         sync.RWMutex
-	replicas   map[uint64]*Replica
+	mu          sync.RWMutex
+	replicas    map[uint64]*Replica
 	partitioned map[uint64]bool
+	// dropSnap drops MsgSnap destined for these peers while leaving heartbeats
+	// and appends flowing — models a snapshot transfer that keeps failing (e.g.
+	// oversized payload) without cutting the peer off entirely.
+	dropSnap map[uint64]bool
+	// snapDelivered counts MsgSnap messages actually delivered to each peer, so
+	// a test can assert a follower recovered *via* a snapshot rather than
+	// incidentally via MsgApp.
+	snapDelivered map[uint64]int
 }
 
 func newGatedTransport() *gatedTransport {
 	return &gatedTransport{
-		replicas:    make(map[uint64]*Replica),
-		partitioned: make(map[uint64]bool),
+		replicas:      make(map[uint64]*Replica),
+		partitioned:   make(map[uint64]bool),
+		dropSnap:      make(map[uint64]bool),
+		snapDelivered: make(map[uint64]int),
 	}
 }
 
 func (tr *gatedTransport) send(msgs []raft.Message) {
-	tr.mu.RLock()
-	defer tr.mu.RUnlock()
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
 	for _, m := range msgs {
 		if tr.partitioned[m.From] || tr.partitioned[m.To] {
 			continue
 		}
+		if m.Type == raft.MsgSnap && tr.dropSnap[m.To] {
+			continue // simulate a failed snapshot transfer
+		}
 		if r, ok := tr.replicas[m.To]; ok {
+			if m.Type == raft.MsgSnap {
+				tr.snapDelivered[m.To]++
+			}
 			r.Step(m)
 		}
 	}
@@ -55,6 +71,18 @@ func (tr *gatedTransport) heal(id uint64) {
 	tr.mu.Lock()
 	delete(tr.partitioned, id)
 	tr.mu.Unlock()
+}
+
+func (tr *gatedTransport) setDropSnap(id uint64, drop bool) {
+	tr.mu.Lock()
+	tr.dropSnap[id] = drop
+	tr.mu.Unlock()
+}
+
+func (tr *gatedTransport) snapshotsDeliveredTo(id uint64) int {
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
+	return tr.snapDelivered[id]
 }
 
 // newReplicaWithDir creates a Replica on a specific directory so tests can
@@ -227,5 +255,14 @@ func TestSnapshotE2ELaggingFollowerRecovers(t *testing.T) {
 	if snap.Metadata.Index < appliedIdx {
 		t.Errorf("follower snapshot index %d < leader's snapshot index %d",
 			snap.Metadata.Index, appliedIdx)
+	}
+
+	// The recovery must have gone *through* a snapshot, not incidentally caught
+	// up via MsgApp. Without this, the test passes for the wrong reason — which
+	// is exactly how it failed before S4+S6: whichever node won a disrupted
+	// re-election still held the full log and served plain entries.
+	if n := tr.snapshotsDeliveredTo(follower.id); n == 0 {
+		t.Fatalf("follower %d recovered without any MsgSnap delivered: it caught up via MsgApp, "+
+			"not a snapshot", follower.id)
 	}
 }

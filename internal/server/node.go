@@ -303,7 +303,22 @@ func (n *Node) sendRaftMessages(msgs []raft.Message) {
 			client := pb.NewRaftServiceClient(conn)
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
-			_, _ = client.Step(ctx, raftMessageToProto(m))
+			// A failed send used to be discarded. For most message types Raft
+			// retries on the next tick, so a dropped heartbeat/append is
+			// self-healing — but a dropped MsgSnap silently strands the target
+			// (its log may be compacted past what MsgApp can serve), so surface
+			// every failure and call out MsgSnap specifically. Delivery is still
+			// retried by the leader's next sendAppend, which does not advance
+			// matchIndex until the follower acks.
+			if _, err := client.Step(ctx, raftMessageToProto(m)); err != nil {
+				if m.Type == raft.MsgSnap {
+					log.Printf("[raft] node %d: MsgSnap to %d failed: %v (follower will be retried)",
+						n.id, m.To, err)
+				} else {
+					log.Printf("[raft] node %d: Step %d to %d failed: %v",
+						n.id, m.Type, m.To, err)
+				}
+			}
 		}()
 	}
 }

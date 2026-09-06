@@ -16,6 +16,12 @@ import (
 
 const tickInterval = 10 * time.Millisecond
 
+// snapshotThreshold is how many applied entries may accumulate beyond the log's
+// start before the Ready loop captures a snapshot and truncates. Small enough
+// that a busy replica does not carry an unbounded log; large enough that steady
+// single writes do not snapshot on every entry.
+const snapshotThreshold uint64 = 8
+
 type proposalMsg struct {
 	data   []byte
 	doneCh chan error
@@ -76,6 +82,12 @@ type Replica struct {
 
 	// pendingProps holds proposals waiting for their log index assignment.
 	pendingProps []proposalMsg
+
+	// lastSnapIndex is the index of the most recent snapshot this replica has
+	// created or installed. Tracked in-process (rather than read from storage
+	// every cycle, which would deserialize the whole snapshot) so the Ready
+	// loop can decide truncation cheaply. Touched only on the run() goroutine.
+	lastSnapIndex uint64
 
 	// sendFn delivers outbound Raft messages.
 	// In production: sendFn sends via gRPC. In tests: delivers in-process.
@@ -264,6 +276,43 @@ func (r *Replica) handleReady() {
 
 	// 6. Advance
 	r.rn.Advance(rd)
+
+	// 7. Bound the log: snapshot past the threshold and truncate up to the safe
+	// point. Runs after Advance so it reads the post-Advance applied watermark.
+	r.maybeSnapshotAndCompact()
+}
+
+// maybeSnapshotAndCompact bounds Raft log growth. Once more than
+// snapshotThreshold applied entries have accumulated beyond the log's start it
+// captures a snapshot at the applied watermark; then, every cycle, it truncates
+// the log up to CompactableIndex — which may stop short of the snapshot when a
+// lagging follower still needs earlier entries. Re-running the truncation each
+// cycle means the log shrinks as soon as that follower is caught up (via the
+// MsgSnap that sendAppend ships it).
+func (r *Replica) maybeSnapshotAndCompact() {
+	applied := r.rn.Applied()
+	first, err := r.storage.FirstIndex()
+	if err != nil {
+		return
+	}
+	// Capture a fresh snapshot once enough entries have piled up beyond the log
+	// start, and only if we do not already have one at this watermark.
+	if applied > r.lastSnapIndex && applied+1 >= first+snapshotThreshold {
+		if _, err := r.createSnapshotOnLoop(); err != nil {
+			log.Printf("replica %d: auto-snapshot at applied %d: %v", r.id, applied, err)
+		}
+	}
+	// Advance truncation toward the safe point. A snapshot may have been
+	// created earlier, and a lagging follower may have just acked one.
+	if r.lastSnapIndex == 0 {
+		return
+	}
+	compactTo := r.rn.CompactableIndex(r.lastSnapIndex)
+	if compactTo+1 > first {
+		if err := r.storage.Compact(compactTo); err != nil {
+			log.Printf("replica %d: compact to %d: %v", r.id, compactTo, err)
+		}
+	}
 }
 
 // installSnapshot wipes the state machine's user-data, applies the snapshot's
@@ -303,6 +352,7 @@ func (r *Replica) installSnapshot(snap raft.Snapshot) error {
 	if err := r.storage.Compact(snap.Metadata.Index); err != nil {
 		return fmt.Errorf("compact: %w", err)
 	}
+	r.lastSnapIndex = snap.Metadata.Index
 	return nil
 }
 
@@ -385,7 +435,14 @@ func (r *Replica) createSnapshotOnLoop() (raft.SnapshotMetadata, error) {
 	if err := r.storage.SaveSnapshot(snap); err != nil {
 		return raft.SnapshotMetadata{}, fmt.Errorf("snapshot: save: %w", err)
 	}
-	if err := r.storage.Compact(appliedIndex); err != nil {
+	r.lastSnapIndex = appliedIndex
+	// Truncate only up to the safe point, not blindly to appliedIndex. If a
+	// follower still needs entries at or below appliedIndex and has not yet
+	// received a snapshot, CompactableIndex caps truncation at its match so it
+	// retains a log fallback — see RawNode.CompactableIndex. On a single node
+	// or a follower this equals appliedIndex, so behaviour there is unchanged.
+	compactTo := r.rn.CompactableIndex(appliedIndex)
+	if err := r.storage.Compact(compactTo); err != nil {
 		return raft.SnapshotMetadata{}, fmt.Errorf("snapshot: compact: %w", err)
 	}
 	return snap.Metadata, nil

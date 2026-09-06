@@ -18,6 +18,12 @@ func NewContext() *Context {
 		conns: make(map[string]*grpc.ClientConn),
 		opts: []grpc.DialOption{
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			// Match the server's ceiling so a large MsgSnap is not rejected on
+			// send or receive. See MaxMessageBytes.
+			grpc.WithDefaultCallOptions(
+				grpc.MaxCallRecvMsgSize(MaxMessageBytes),
+				grpc.MaxCallSendMsgSize(MaxMessageBytes),
+			),
 		},
 	}
 }
