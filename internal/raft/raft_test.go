@@ -7,12 +7,17 @@ import "testing"
 type testNetwork struct {
 	nodes   map[uint64]*RawNode
 	storage map[uint64]*memStorage
+	// partitioned nodes keep ticking (so they still time out and campaign) but
+	// their inbound and outbound messages are dropped, modelling a node whose
+	// network link is cut while its process keeps running.
+	partitioned map[uint64]bool
 }
 
 func newTestNetwork(ids ...uint64) *testNetwork {
 	nt := &testNetwork{
-		nodes:   make(map[uint64]*RawNode),
-		storage: make(map[uint64]*memStorage),
+		nodes:       make(map[uint64]*RawNode),
+		storage:     make(map[uint64]*memStorage),
+		partitioned: make(map[uint64]bool),
 	}
 	peers := make([]uint64, len(ids))
 	copy(peers, ids)
@@ -23,6 +28,12 @@ func newTestNetwork(ids ...uint64) *testNetwork {
 	}
 	return nt
 }
+
+// partition cuts node id off from the rest of the network.
+func (nt *testNetwork) partition(id uint64) { nt.partitioned[id] = true }
+
+// heal restores node id's network link.
+func (nt *testNetwork) heal(id uint64) { delete(nt.partitioned, id) }
 
 // deliver sends all messages produced by a node after a Tick or Step.
 func (nt *testNetwork) deliverReady(id uint64) {
@@ -37,6 +48,10 @@ func (nt *testNetwork) deliverReady(id uint64) {
 	}
 	n.Advance(rd)
 	for _, msg := range rd.Messages {
+		// Drop any message that would have to cross a partition boundary.
+		if nt.partitioned[id] || nt.partitioned[msg.To] {
+			continue
+		}
 		if target, ok := nt.nodes[msg.To]; ok {
 			target.Step(msg)
 		}

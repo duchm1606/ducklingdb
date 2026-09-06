@@ -7,6 +7,11 @@ const (
 	StateFollower  StateType = iota
 	StateCandidate StateType = iota
 	StateLeader    StateType = iota
+	// StatePreCandidate is a node running a PreVote election: it is probing
+	// whether it *could* win at term+1 without having adopted that term. It
+	// never appears on the wire (SoftState is internal to the Ready loop), so
+	// its ordinal is free to change.
+	StatePreCandidate StateType = iota
 )
 
 // MessageType identifies a Raft message.
@@ -23,6 +28,13 @@ const (
 	MsgHeartbeatResp                    // heartbeat response
 	MsgProp                             // internal: client proposal
 	MsgSnap                             // InstallSnapshot RPC
+	// MsgPreVote and MsgPreVoteResp MUST stay at the end of this block. The
+	// gRPC transport ships MessageType as a raw uint32 (raft_convert.go casts
+	// both directions), so these ordinals are the wire contract — inserting a
+	// value earlier would renumber MsgSnap et al. and break replicas that
+	// disagree on the numbering.
+	MsgPreVote     // PreVote RPC: probe at term+1 without adopting the term
+	MsgPreVoteResp // PreVote response
 )
 
 // SnapshotMetadata describes a snapshot's position in the log.
