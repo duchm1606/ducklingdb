@@ -308,11 +308,14 @@ func (x *SQLRow) GetValues() []string {
 }
 
 type SQLResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Columns       []string               `protobuf:"bytes,1,rep,name=columns,proto3" json:"columns,omitempty"`
-	Rows          []*SQLRow              `protobuf:"bytes,2,rep,name=rows,proto3" json:"rows,omitempty"`
-	Message       string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
-	Error         string                 `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Columns []string               `protobuf:"bytes,1,rep,name=columns,proto3" json:"columns,omitempty"`
+	Rows    []*SQLRow              `protobuf:"bytes,2,rep,name=rows,proto3" json:"rows,omitempty"`
+	Message string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	Error   string                 `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
+	// Set when this node is not the leader — same typed shape ExecSQL and Batch
+	// both use so a client can redirect. See NotLeaderError in api.proto.
+	NotLeader     *NotLeaderError `protobuf:"bytes,5,opt,name=not_leader,json=notLeader,proto3" json:"not_leader,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -373,6 +376,13 @@ func (x *SQLResponse) GetError() string {
 		return x.Error
 	}
 	return ""
+}
+
+func (x *SQLResponse) GetNotLeader() *NotLeaderError {
+	if x != nil {
+		return x.NotLeader
+	}
+	return nil
 }
 
 // Info is a single piece of gossip data identified by a string key.
@@ -545,12 +555,14 @@ const file_internal_proto_service_proto_rawDesc = "" +
 	"SQLRequest\x12\x10\n" +
 	"\x03sql\x18\x01 \x01(\tR\x03sql\" \n" +
 	"\x06SQLRow\x12\x16\n" +
-	"\x06values\x18\x01 \x03(\tR\x06values\"\x85\x01\n" +
+	"\x06values\x18\x01 \x03(\tR\x06values\"\xc6\x01\n" +
 	"\vSQLResponse\x12\x18\n" +
 	"\acolumns\x18\x01 \x03(\tR\acolumns\x12,\n" +
 	"\x04rows\x18\x02 \x03(\v2\x18.ducklingdb.proto.SQLRowR\x04rows\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\x12\x14\n" +
-	"\x05error\x18\x04 \x01(\tR\x05error\"\x87\x01\n" +
+	"\x05error\x18\x04 \x01(\tR\x05error\x12?\n" +
+	"\n" +
+	"not_leader\x18\x05 \x01(\v2 .ducklingdb.proto.NotLeaderErrorR\tnotLeader\"\x87\x01\n" +
 	"\x04Info\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\x12\x1d\n" +
@@ -608,35 +620,37 @@ var file_internal_proto_service_proto_goTypes = []any{
 	nil,                            // 9: ducklingdb.proto.GossipMessage.DeltaEntry
 	nil,                            // 10: ducklingdb.proto.GossipMessage.HighWaterEntry
 	(*Timestamp)(nil),              // 11: ducklingdb.proto.Timestamp
-	(*BatchRequest)(nil),           // 12: ducklingdb.proto.BatchRequest
-	(*RaftMessage)(nil),            // 13: ducklingdb.proto.RaftMessage
-	(*BatchResponse)(nil),          // 14: ducklingdb.proto.BatchResponse
-	(*RaftMessageResponse)(nil),    // 15: ducklingdb.proto.RaftMessageResponse
+	(*NotLeaderError)(nil),         // 12: ducklingdb.proto.NotLeaderError
+	(*BatchRequest)(nil),           // 13: ducklingdb.proto.BatchRequest
+	(*RaftMessage)(nil),            // 14: ducklingdb.proto.RaftMessage
+	(*BatchResponse)(nil),          // 15: ducklingdb.proto.BatchResponse
+	(*RaftMessageResponse)(nil),    // 16: ducklingdb.proto.RaftMessageResponse
 }
 var file_internal_proto_service_proto_depIdxs = []int32{
 	11, // 0: ducklingdb.proto.PingRequest.server_time:type_name -> ducklingdb.proto.Timestamp
 	11, // 1: ducklingdb.proto.PingResponse.server_time:type_name -> ducklingdb.proto.Timestamp
 	5,  // 2: ducklingdb.proto.SQLResponse.rows:type_name -> ducklingdb.proto.SQLRow
-	9,  // 3: ducklingdb.proto.GossipMessage.delta:type_name -> ducklingdb.proto.GossipMessage.DeltaEntry
-	10, // 4: ducklingdb.proto.GossipMessage.high_water:type_name -> ducklingdb.proto.GossipMessage.HighWaterEntry
-	7,  // 5: ducklingdb.proto.GossipMessage.DeltaEntry.value:type_name -> ducklingdb.proto.Info
-	12, // 6: ducklingdb.proto.Internal.Batch:input_type -> ducklingdb.proto.BatchRequest
-	2,  // 7: ducklingdb.proto.Internal.Heartbeat:input_type -> ducklingdb.proto.PingRequest
-	0,  // 8: ducklingdb.proto.Internal.AllocateNodeID:input_type -> ducklingdb.proto.AllocateNodeIDRequest
-	4,  // 9: ducklingdb.proto.Internal.ExecSQL:input_type -> ducklingdb.proto.SQLRequest
-	8,  // 10: ducklingdb.proto.GossipService.Gossip:input_type -> ducklingdb.proto.GossipMessage
-	13, // 11: ducklingdb.proto.RaftService.Step:input_type -> ducklingdb.proto.RaftMessage
-	14, // 12: ducklingdb.proto.Internal.Batch:output_type -> ducklingdb.proto.BatchResponse
-	3,  // 13: ducklingdb.proto.Internal.Heartbeat:output_type -> ducklingdb.proto.PingResponse
-	1,  // 14: ducklingdb.proto.Internal.AllocateNodeID:output_type -> ducklingdb.proto.AllocateNodeIDResponse
-	6,  // 15: ducklingdb.proto.Internal.ExecSQL:output_type -> ducklingdb.proto.SQLResponse
-	8,  // 16: ducklingdb.proto.GossipService.Gossip:output_type -> ducklingdb.proto.GossipMessage
-	15, // 17: ducklingdb.proto.RaftService.Step:output_type -> ducklingdb.proto.RaftMessageResponse
-	12, // [12:18] is the sub-list for method output_type
-	6,  // [6:12] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	12, // 3: ducklingdb.proto.SQLResponse.not_leader:type_name -> ducklingdb.proto.NotLeaderError
+	9,  // 4: ducklingdb.proto.GossipMessage.delta:type_name -> ducklingdb.proto.GossipMessage.DeltaEntry
+	10, // 5: ducklingdb.proto.GossipMessage.high_water:type_name -> ducklingdb.proto.GossipMessage.HighWaterEntry
+	7,  // 6: ducklingdb.proto.GossipMessage.DeltaEntry.value:type_name -> ducklingdb.proto.Info
+	13, // 7: ducklingdb.proto.Internal.Batch:input_type -> ducklingdb.proto.BatchRequest
+	2,  // 8: ducklingdb.proto.Internal.Heartbeat:input_type -> ducklingdb.proto.PingRequest
+	0,  // 9: ducklingdb.proto.Internal.AllocateNodeID:input_type -> ducklingdb.proto.AllocateNodeIDRequest
+	4,  // 10: ducklingdb.proto.Internal.ExecSQL:input_type -> ducklingdb.proto.SQLRequest
+	8,  // 11: ducklingdb.proto.GossipService.Gossip:input_type -> ducklingdb.proto.GossipMessage
+	14, // 12: ducklingdb.proto.RaftService.Step:input_type -> ducklingdb.proto.RaftMessage
+	15, // 13: ducklingdb.proto.Internal.Batch:output_type -> ducklingdb.proto.BatchResponse
+	3,  // 14: ducklingdb.proto.Internal.Heartbeat:output_type -> ducklingdb.proto.PingResponse
+	1,  // 15: ducklingdb.proto.Internal.AllocateNodeID:output_type -> ducklingdb.proto.AllocateNodeIDResponse
+	6,  // 16: ducklingdb.proto.Internal.ExecSQL:output_type -> ducklingdb.proto.SQLResponse
+	8,  // 17: ducklingdb.proto.GossipService.Gossip:output_type -> ducklingdb.proto.GossipMessage
+	16, // 18: ducklingdb.proto.RaftService.Step:output_type -> ducklingdb.proto.RaftMessageResponse
+	13, // [13:19] is the sub-list for method output_type
+	7,  // [7:13] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_internal_proto_service_proto_init() }

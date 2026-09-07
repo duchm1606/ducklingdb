@@ -85,4 +85,15 @@ message BatchRequest {
 message BatchResponse {
   repeated ResponseUnion responses = 1;
   Error error = 2;
+  // Set (with responses empty) when this node is not the leader. The client
+  // should redirect to leader_address. Same shape is returned by ExecSQL.
+  NotLeaderError not_leader = 3;
+}
+
+// NotLeaderError tells a client that reached a non-leader where the leader is,
+// so it can redirect rather than guess. Under M4's leader-is-leaseholder
+// simplification the leader is the only replica that serves reads and writes.
+message NotLeaderError {
+  uint64 leader_node_id = 1;  // 0 if no leader is currently known
+  string leader_address = 2;  // resolved via gossip; empty if unknown
 }

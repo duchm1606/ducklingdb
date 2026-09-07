@@ -727,9 +727,12 @@ func (x *BatchRequest) GetRequests() []*RequestUnion {
 // request fails, the error field is set and remaining responses may
 // be absent.
 type BatchResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Responses     []*ResponseUnion       `protobuf:"bytes,1,rep,name=responses,proto3" json:"responses,omitempty"`
-	Error         *Error                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Responses []*ResponseUnion       `protobuf:"bytes,1,rep,name=responses,proto3" json:"responses,omitempty"`
+	Error     *Error                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	// Set (with responses empty) when this node is not the leader. The client
+	// should redirect to leader_address. Same shape is returned by ExecSQL.
+	NotLeader     *NotLeaderError `protobuf:"bytes,3,opt,name=not_leader,json=notLeader,proto3" json:"not_leader,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -778,6 +781,68 @@ func (x *BatchResponse) GetError() *Error {
 	return nil
 }
 
+func (x *BatchResponse) GetNotLeader() *NotLeaderError {
+	if x != nil {
+		return x.NotLeader
+	}
+	return nil
+}
+
+// NotLeaderError tells a client that reached a non-leader where the leader is,
+// so it can redirect rather than guess. Under M4's leader-is-leaseholder
+// simplification the leader is the only replica that serves reads and writes.
+type NotLeaderError struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	LeaderNodeId  uint64                 `protobuf:"varint,1,opt,name=leader_node_id,json=leaderNodeId,proto3" json:"leader_node_id,omitempty"` // 0 if no leader is currently known
+	LeaderAddress string                 `protobuf:"bytes,2,opt,name=leader_address,json=leaderAddress,proto3" json:"leader_address,omitempty"` // resolved via gossip; empty if unknown
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NotLeaderError) Reset() {
+	*x = NotLeaderError{}
+	mi := &file_internal_proto_api_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NotLeaderError) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NotLeaderError) ProtoMessage() {}
+
+func (x *NotLeaderError) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_proto_api_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NotLeaderError.ProtoReflect.Descriptor instead.
+func (*NotLeaderError) Descriptor() ([]byte, []int) {
+	return file_internal_proto_api_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *NotLeaderError) GetLeaderNodeId() uint64 {
+	if x != nil {
+		return x.LeaderNodeId
+	}
+	return 0
+}
+
+func (x *NotLeaderError) GetLeaderAddress() string {
+	if x != nil {
+		return x.LeaderAddress
+	}
+	return ""
+}
+
 var File_internal_proto_api_proto protoreflect.FileDescriptor
 
 const file_internal_proto_api_proto_rawDesc = "" +
@@ -819,10 +884,15 @@ const file_internal_proto_api_proto_rawDesc = "" +
 	"\x05value\"|\n" +
 	"\fBatchRequest\x120\n" +
 	"\x06header\x18\x01 \x01(\v2\x18.ducklingdb.proto.HeaderR\x06header\x12:\n" +
-	"\brequests\x18\x02 \x03(\v2\x1e.ducklingdb.proto.RequestUnionR\brequests\"}\n" +
+	"\brequests\x18\x02 \x03(\v2\x1e.ducklingdb.proto.RequestUnionR\brequests\"\xbe\x01\n" +
 	"\rBatchResponse\x12=\n" +
 	"\tresponses\x18\x01 \x03(\v2\x1f.ducklingdb.proto.ResponseUnionR\tresponses\x12-\n" +
-	"\x05error\x18\x02 \x01(\v2\x17.ducklingdb.proto.ErrorR\x05errorB0Z.github.com/duchm1606/ducklingdb/internal/protob\x06proto3"
+	"\x05error\x18\x02 \x01(\v2\x17.ducklingdb.proto.ErrorR\x05error\x12?\n" +
+	"\n" +
+	"not_leader\x18\x03 \x01(\v2 .ducklingdb.proto.NotLeaderErrorR\tnotLeader\"]\n" +
+	"\x0eNotLeaderError\x12$\n" +
+	"\x0eleader_node_id\x18\x01 \x01(\x04R\fleaderNodeId\x12%\n" +
+	"\x0eleader_address\x18\x02 \x01(\tR\rleaderAddressB0Z.github.com/duchm1606/ducklingdb/internal/protob\x06proto3"
 
 var (
 	file_internal_proto_api_proto_rawDescOnce sync.Once
@@ -836,7 +906,7 @@ func file_internal_proto_api_proto_rawDescGZIP() []byte {
 	return file_internal_proto_api_proto_rawDescData
 }
 
-var file_internal_proto_api_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_internal_proto_api_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_internal_proto_api_proto_goTypes = []any{
 	(*Header)(nil),         // 0: ducklingdb.proto.Header
 	(*GetRequest)(nil),     // 1: ducklingdb.proto.GetRequest
@@ -851,18 +921,19 @@ var file_internal_proto_api_proto_goTypes = []any{
 	(*ResponseUnion)(nil),  // 10: ducklingdb.proto.ResponseUnion
 	(*BatchRequest)(nil),   // 11: ducklingdb.proto.BatchRequest
 	(*BatchResponse)(nil),  // 12: ducklingdb.proto.BatchResponse
-	(*Timestamp)(nil),      // 13: ducklingdb.proto.Timestamp
-	(*TxnMeta)(nil),        // 14: ducklingdb.proto.TxnMeta
-	(*Value)(nil),          // 15: ducklingdb.proto.Value
-	(*KeyValue)(nil),       // 16: ducklingdb.proto.KeyValue
-	(*Error)(nil),          // 17: ducklingdb.proto.Error
+	(*NotLeaderError)(nil), // 13: ducklingdb.proto.NotLeaderError
+	(*Timestamp)(nil),      // 14: ducklingdb.proto.Timestamp
+	(*TxnMeta)(nil),        // 15: ducklingdb.proto.TxnMeta
+	(*Value)(nil),          // 16: ducklingdb.proto.Value
+	(*KeyValue)(nil),       // 17: ducklingdb.proto.KeyValue
+	(*Error)(nil),          // 18: ducklingdb.proto.Error
 }
 var file_internal_proto_api_proto_depIdxs = []int32{
-	13, // 0: ducklingdb.proto.Header.timestamp:type_name -> ducklingdb.proto.Timestamp
-	14, // 1: ducklingdb.proto.Header.txn:type_name -> ducklingdb.proto.TxnMeta
-	15, // 2: ducklingdb.proto.GetResponse.value:type_name -> ducklingdb.proto.Value
-	15, // 3: ducklingdb.proto.PutRequest.value:type_name -> ducklingdb.proto.Value
-	16, // 4: ducklingdb.proto.ScanResponse.rows:type_name -> ducklingdb.proto.KeyValue
+	14, // 0: ducklingdb.proto.Header.timestamp:type_name -> ducklingdb.proto.Timestamp
+	15, // 1: ducklingdb.proto.Header.txn:type_name -> ducklingdb.proto.TxnMeta
+	16, // 2: ducklingdb.proto.GetResponse.value:type_name -> ducklingdb.proto.Value
+	16, // 3: ducklingdb.proto.PutRequest.value:type_name -> ducklingdb.proto.Value
+	17, // 4: ducklingdb.proto.ScanResponse.rows:type_name -> ducklingdb.proto.KeyValue
 	1,  // 5: ducklingdb.proto.RequestUnion.get:type_name -> ducklingdb.proto.GetRequest
 	3,  // 6: ducklingdb.proto.RequestUnion.put:type_name -> ducklingdb.proto.PutRequest
 	5,  // 7: ducklingdb.proto.RequestUnion.delete:type_name -> ducklingdb.proto.DeleteRequest
@@ -874,12 +945,13 @@ var file_internal_proto_api_proto_depIdxs = []int32{
 	0,  // 13: ducklingdb.proto.BatchRequest.header:type_name -> ducklingdb.proto.Header
 	9,  // 14: ducklingdb.proto.BatchRequest.requests:type_name -> ducklingdb.proto.RequestUnion
 	10, // 15: ducklingdb.proto.BatchResponse.responses:type_name -> ducklingdb.proto.ResponseUnion
-	17, // 16: ducklingdb.proto.BatchResponse.error:type_name -> ducklingdb.proto.Error
-	17, // [17:17] is the sub-list for method output_type
-	17, // [17:17] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	18, // 16: ducklingdb.proto.BatchResponse.error:type_name -> ducklingdb.proto.Error
+	13, // 17: ducklingdb.proto.BatchResponse.not_leader:type_name -> ducklingdb.proto.NotLeaderError
+	18, // [18:18] is the sub-list for method output_type
+	18, // [18:18] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_internal_proto_api_proto_init() }
@@ -906,7 +978,7 @@ func file_internal_proto_api_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_proto_api_proto_rawDesc), len(file_internal_proto_api_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   13,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

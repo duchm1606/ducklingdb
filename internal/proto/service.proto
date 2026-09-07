@@ -66,6 +66,9 @@ message SQLResponse {
   repeated SQLRow rows    = 2;
   string message          = 3;
   string error            = 4;
+  // Set when this node is not the leader — same typed shape ExecSQL and Batch
+  // both use so a client can redirect. See NotLeaderError in api.proto.
+  NotLeaderError not_leader = 5;
 }
 
 // --- Gossip messages ---
