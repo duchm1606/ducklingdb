@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/duchm1606/ducklingdb/internal/client"
 	"github.com/duchm1606/ducklingdb/internal/gossip"
 	pb "github.com/duchm1606/ducklingdb/internal/proto"
 	"github.com/duchm1606/ducklingdb/internal/rpc"
@@ -234,15 +235,10 @@ func runReplRemote(addr string) {
 	if strings.HasPrefix(addr, ":") {
 		addr = "127.0.0.1" + addr
 	}
-	rpcCtx := rpc.NewContext()
-	defer rpcCtx.Close()
-
-	conn, err := rpcCtx.GRPCDialNode(addr)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: dial %s: %v\n", addr, err)
-		os.Exit(1)
-	}
-	client := pb.NewInternalClient(conn)
+	// Use the redirect-following client: if addr is a follower, ExecSQL is
+	// transparently retried against the leader named in its NotLeaderError.
+	cli := client.New(addr)
+	defer cli.Close()
 
 	fmt.Printf("Connected to %s\n", addr)
 	scanner := bufio.NewScanner(os.Stdin)
@@ -259,7 +255,7 @@ func runReplRemote(addr string) {
 			break
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		resp, err := client.ExecSQL(ctx, &pb.SQLRequest{Sql: line})
+		resp, err := cli.ExecSQL(ctx, line)
 		cancel()
 		if err != nil {
 			fmt.Fprintf(os.Stdout, "ERROR: %v\n", err)
