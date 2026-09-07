@@ -2,13 +2,17 @@ package kvserver
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
 	"time"
 
+	pb "github.com/duchm1606/ducklingdb/internal/proto"
 	"github.com/duchm1606/ducklingdb/internal/storage/mvcc"
 	"github.com/duchm1606/ducklingdb/internal/util/hlc"
+	"google.golang.org/protobuf/proto"
 )
 
 // S6 — Snapshot policy + transport sizing + truncation constraint.
@@ -31,6 +35,88 @@ func proposePutN(t *testing.T, r *Replica, prefix string, n int) {
 	t.Helper()
 	for i := 0; i < n; i++ {
 		proposePut(t, r, []byte(fmt.Sprintf("%s-%03d", prefix, i)), []byte("v"))
+	}
+}
+
+// currentLeader returns the connected replica that currently believes it leads,
+// or nil if none does right now (e.g. mid-election). A partitioned replica is
+// excluded: it cannot serve, and a deposed leader may still briefly report
+// itself as leader before CheckQuorum steps it down.
+func currentLeader(tr *gatedTransport) *Replica {
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
+	for id, r := range tr.replicas {
+		if !tr.partitioned[id] && r.Lead() == r.id {
+			return r
+		}
+	}
+	return nil
+}
+
+// leaderTracker counts how many times leadership moved across a test, so a fix
+// that tolerates churn does not also hide it. Abnormally high counts are the
+// signal for the D-15 investigation, not something to swallow silently.
+type leaderTracker struct {
+	last    uint64
+	changes int
+}
+
+func (lt *leaderTracker) observe(t *testing.T, id uint64) {
+	if lt.last != 0 && id != lt.last {
+		lt.changes++
+		t.Logf("leadership moved %d -> %d (change #%d)", lt.last, id, lt.changes)
+	}
+	lt.last = id
+}
+
+// proposeToLeader proposes data to whichever replica currently leads, retrying
+// against the new leader if leadership moves. Leadership churn under load is
+// legitimate — a real client follows exactly this redirect (internal/client) —
+// so a test must not assume the node it first saw leading stays leader. lt
+// records each change.
+func proposeToLeader(t *testing.T, tr *gatedTransport, data []byte, lt *leaderTracker) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		leader := currentLeader(tr)
+		if leader == nil {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		lt.observe(t, leader.id)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err := leader.Propose(ctx, data)
+		cancel()
+		if err == nil {
+			return
+		}
+		if errors.Is(err, ErrNotLeader) {
+			continue // leadership moved between the lookup and the propose; retry
+		}
+		t.Fatalf("propose failed (non-leadership error): %v", err)
+	}
+	t.Fatal("proposeToLeader: no leader accepted the proposal within 5s")
+}
+
+func proposePutToLeader(t *testing.T, tr *gatedTransport, key, value []byte, lt *leaderTracker) {
+	t.Helper()
+	req := &pb.BatchRequest{
+		Header: &pb.Header{Timestamp: &pb.Timestamp{WallTime: time.Now().UnixNano()}},
+		Requests: []*pb.RequestUnion{{
+			Value: &pb.RequestUnion_Put{Put: &pb.PutRequest{Key: key, Value: &pb.Value{RawBytes: value}}},
+		}},
+	}
+	data, err := proto.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposeToLeader(t, tr, data, lt)
+}
+
+func proposePutNToLeader(t *testing.T, tr *gatedTransport, prefix string, n int, lt *leaderTracker) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		proposePutToLeader(t, tr, []byte(fmt.Sprintf("%s-%03d", prefix, i)), []byte("v"), lt)
 	}
 }
 
@@ -186,13 +272,18 @@ func TestFailedSnapshotLeavesFollowerRecoverable(t *testing.T) {
 	r1, r2, r3 := threeReplicas(t, tr)
 	leader := waitForLeader(t, tr, 3*time.Second)
 	follower := otherReplica(leader, r1, r2, r3)
+	lt := &leaderTracker{}
 
-	proposePut(t, leader, []byte("baseline"), []byte("v0"))
+	// Propose to whichever node currently leads, not to a captured `leader`:
+	// under load the leader can legitimately change (see D-15), and a real
+	// client would follow that redirect rather than fail. The partitioned
+	// follower is still a fixed, stable choice — a partitioned node cannot lead.
+	proposePutToLeader(t, tr, []byte("baseline"), []byte("v0"), lt)
 	time.Sleep(200 * time.Millisecond)
 
 	// Build a gap large enough to require a snapshot while the follower is away.
 	tr.partition(follower.id)
-	proposePutN(t, leader, "z", 2*int(snapshotThreshold))
+	proposePutNToLeader(t, tr, "z", 2*int(snapshotThreshold), lt)
 	time.Sleep(300 * time.Millisecond)
 
 	lastKey := []byte(fmt.Sprintf("z-%03d", 2*int(snapshotThreshold)-1))
@@ -226,5 +317,57 @@ func TestFailedSnapshotLeavesFollowerRecoverable(t *testing.T) {
 	if tr.snapshotsDeliveredTo(follower.id) == 0 {
 		t.Fatal("follower recovered but no snapshot was ever delivered — it caught up via MsgApp, " +
 			"so this did not exercise snapshot-failure recovery")
+	}
+
+	// Surface, don't swallow: churn is expected to be rare here (the partitioned
+	// follower cannot disrupt the quorum). A consistently high count is the D-15
+	// signal that CheckQuorum is stepping the leader down too readily under load.
+	t.Logf("leadership changes observed during test: %d", lt.changes)
+}
+
+// TestProposePutRetriesThroughLeadershipChange proves the leader-retargeting
+// helper survives a real leadership change — the fragility behind the D-15
+// flake. The plain proposePut, pinned to the node that first led, would fail
+// here with "not the leader" the moment leadership moves.
+func TestProposePutRetriesThroughLeadershipChange(t *testing.T) {
+	tr := newGatedTransport()
+	_, _, _ = threeReplicas(t, tr)
+	leader := waitForLeader(t, tr, 3*time.Second)
+	lt := &leaderTracker{}
+
+	proposePutToLeader(t, tr, []byte("before"), []byte("v0"), lt)
+
+	// Force leadership to move: isolate the current leader so the remaining two
+	// elect a new one.
+	tr.partition(leader.id)
+	deadline := time.Now().Add(5 * time.Second)
+	var newLeader *Replica
+	for time.Now().Before(deadline) {
+		if l := currentLeader(tr); l != nil && l.id != leader.id {
+			newLeader = l
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if newLeader == nil {
+		t.Fatal("no new leader elected after isolating the old one")
+	}
+
+	// The pinned helper would fail against the deposed leader here; the
+	// retargeting helper must find the new one and succeed.
+	proposePutToLeader(t, tr, []byte("after"), []byte("v1"), lt)
+
+	if lt.changes == 0 {
+		t.Fatal("expected the helper to observe a leadership change, but changes=0")
+	}
+	found := false
+	for d := time.Now().Add(3 * time.Second); time.Now().Before(d); time.Sleep(50 * time.Millisecond) {
+		if replicaHasValue(newLeader, []byte("after"), []byte("v1")) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("post-leadership-change write was not applied on the new leader")
 	}
 }
