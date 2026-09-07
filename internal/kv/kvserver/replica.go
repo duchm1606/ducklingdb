@@ -51,6 +51,11 @@ type appliedQuery struct {
 	respC chan uint64
 }
 
+// ErrNotLeader is returned by Propose when this replica is not the leader. The
+// server layer maps it to a typed pb.NotLeaderError (with the leader's address)
+// so both the Batch and ExecSQL entry points surface the same redirect shape.
+var ErrNotLeader = errors.New("not the leader")
+
 // RequestError is a deterministic, per-request failure produced while applying
 // a command — a write-intent conflict, an unknown request type, and so on.
 //
@@ -152,7 +157,7 @@ func (r *Replica) Lead() uint64 { return r.leadID.Load() }
 // Returns an error if the replica is not the leader or the context expires.
 func (r *Replica) Propose(ctx context.Context, data []byte) error {
 	if r.leadID.Load() != r.id {
-		return errors.New("not the leader")
+		return ErrNotLeader
 	}
 	doneCh := make(chan error, 1)
 	select {

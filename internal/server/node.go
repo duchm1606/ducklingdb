@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/duchm1606/ducklingdb/internal/gossip"
@@ -389,6 +391,23 @@ func normalizeAddr(addr string) string {
 
 func (n *Node) NodeID() NodeID                        { return n.id }
 func (n *Node) ClusterID() ClusterID                  { return n.clusterID }
+
+// leaderAddress resolves a leader NodeID to a dialable address via the gossiped
+// node descriptors. Returns "" when the leader is unknown (id 0, or not yet
+// observed in gossip) — the client should then retry rather than redirect.
+func (n *Node) leaderAddress(id uint64) string {
+	if id == 0 {
+		return ""
+	}
+	n.addrMu.RLock()
+	defer n.addrMu.RUnlock()
+	for addr, nid := range n.addrToNodeID {
+		if nid == id {
+			return addr
+		}
+	}
+	return ""
+}
 func (n *Node) Descriptor() *pb.NodeDescriptor        { return n.desc }
 func (n *Node) Engine() storage.Engine                { return n.engine }
 func (n *Node) Clock() *hlc.Clock                     { return n.clock }
@@ -416,7 +435,12 @@ func (s *nodeServer) Heartbeat(ctx context.Context, req *pb.PingRequest) (*pb.Pi
 // deliberately an error rather than a fall-back to a local write: a silent
 // fall-back is how unreplicated data used to get accepted during the first
 // seconds of a cluster's life, only to be overwritten by the Raft log later.
-var errReplicaNotReady = errors.New("raft replica not ready on this node")
+//
+// It is a gRPC codes.Unavailable status — the standard "transient, retry later"
+// signal — and both Batch and ExecSQL return it that way. Previously Batch
+// surfaced it as a transport error while ExecSQL folded it in-band into
+// SQLResponse.Error; that split is unified here (S7).
+var errReplicaNotReady = status.Error(codes.Unavailable, "raft replica not ready on this node")
 
 // errMixedBatch rejects a batch containing both reads and writes.
 //
@@ -459,24 +483,41 @@ func writeBatchResponse(req *pb.BatchRequest) *pb.BatchResponse {
 	return resp
 }
 
+// notLeader returns a populated NotLeaderError when this node is not the leader
+// of r's group, or nil when it is. Both Batch and ExecSQL route through it so
+// the two entry points emit the identical redirect shape — the leader's ID and,
+// when gossip has resolved it, a dialable address.
+func (s *nodeServer) notLeader(r *kvserver.Replica) *pb.NotLeaderError {
+	leader := r.Lead()
+	if leader == uint64(s.node.NodeID()) {
+		return nil
+	}
+	return &pb.NotLeaderError{
+		LeaderNodeId:  leader,
+		LeaderAddress: s.node.leaderAddress(leader),
+	}
+}
+
 // Batch serves the public KV API.
 //
-// Writes are proposed to Raft and only acknowledged once committed and applied;
-// they are no longer executed directly against local MVCC. Reads are still
-// served from the local engine — gating reads on leadership is a separate piece
-// of work, so a follower can still return a stale read here.
+// Leader-only: both reads and writes are served exclusively by the leader, so a
+// follower can no longer return a stale read — it redirects the client to the
+// leader instead (M4.9). Writes are proposed to Raft and acknowledged only once
+// committed and applied.
 func (s *nodeServer) Batch(ctx context.Context, req *pb.BatchRequest) (*pb.BatchResponse, error) {
 	hasRead, hasWrite := batchKind(req)
 	if hasRead && hasWrite {
 		return nil, errMixedBatch
 	}
-	if !hasWrite {
-		return s.batch.Batch(ctx, req)
-	}
-
 	r := s.node.getReplica()
 	if r == nil {
 		return nil, errReplicaNotReady
+	}
+	if nl := s.notLeader(r); nl != nil {
+		return &pb.BatchResponse{NotLeader: nl}, nil
+	}
+	if !hasWrite {
+		return s.batch.Batch(ctx, req)
 	}
 	data, err := proto.Marshal(req)
 	if err != nil {
@@ -489,6 +530,13 @@ func (s *nodeServer) Batch(ctx context.Context, req *pb.BatchRequest) (*pb.Batch
 		var reqErr *kvserver.RequestError
 		if errors.As(err, &reqErr) {
 			return &pb.BatchResponse{Error: &pb.Error{Message: reqErr.Message}}, nil
+		}
+		// Leadership was lost between the gate above and Propose (rare race):
+		// surface the same typed redirect rather than a bare transport error.
+		if errors.Is(err, kvserver.ErrNotLeader) {
+			if nl := s.notLeader(r); nl != nil {
+				return &pb.BatchResponse{NotLeader: nl}, nil
+			}
 		}
 		return nil, err
 	}
@@ -510,13 +558,17 @@ func (s *nodeServer) ExecSQL(ctx context.Context, req *pb.SQLRequest) (*pb.SQLRe
 	r := s.node.getReplica()
 	if r == nil {
 		// No silent fall-back to a direct engine write: that accepted
-		// unreplicated data while the Raft group was still forming.
-		return &pb.SQLResponse{Error: errReplicaNotReady.Error()}, nil
+		// unreplicated data while the Raft group was still forming. Surfaced as
+		// a transport error (codes.Unavailable), the same way Batch does.
+		return nil, errReplicaNotReady
+	}
+	// Leader-only (M4.9): reject reads and writes on a follower. The formatted
+	// "not the leader (leader is node N)" string the sender used to return is
+	// gone — both entry points now emit the same typed NotLeaderError.
+	if nl := s.notLeader(r); nl != nil {
+		return &pb.SQLResponse{NotLeader: nl}, nil
 	}
 	sender := func(sctx context.Context, batch *pb.BatchRequest) (*pb.BatchResponse, error) {
-		if r.Lead() != uint64(s.node.NodeID()) {
-			return nil, fmt.Errorf("not the leader (leader is node %d)", r.Lead())
-		}
 		data, err := proto.Marshal(batch)
 		if err != nil {
 			return nil, err
@@ -530,6 +582,13 @@ func (s *nodeServer) ExecSQL(ctx context.Context, req *pb.SQLRequest) (*pb.SQLRe
 
 	result, err := exec.Execute(req.Sql)
 	if err != nil {
+		// Leadership lost mid-execution (rare race): same typed redirect as the
+		// entry gate, not a bare string.
+		if errors.Is(err, kvserver.ErrNotLeader) {
+			if nl := s.notLeader(r); nl != nil {
+				return &pb.SQLResponse{NotLeader: nl}, nil
+			}
+		}
 		return &pb.SQLResponse{Error: err.Error()}, nil
 	}
 	rows := make([]*pb.SQLRow, len(result.Rows))
