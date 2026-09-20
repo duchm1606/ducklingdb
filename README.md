@@ -56,27 +56,37 @@ duck> \q
 
 Supported statements: `CREATE TABLE`, `INSERT`, `SELECT` (full scan + `WHERE pk = val`), `UPDATE`, `DELETE`. Each statement auto-commits. Type `\q` or `\quit` to exit.
 
-### Multi-node cluster (gossip)
+### Multi-node cluster (gossip + Raft)
 
 Open three terminals. Each node needs its own data directory.
+
+Two flags drive cluster membership, and they do different jobs:
+
+- `--join` seeds **gossip** — how a node discovers its peers' liveness and descriptors.
+- `--peers` defines the **Raft group** — the full list of member addresses, *including the node's own*, identical on every node. Omit it and the node forms a single-node Raft group that replicates nothing.
 
 **Terminal 1 — bootstrap node**
 
 ```bash
-./bin/ducklingdb start --addr :26257 --data /tmp/duck1
+./bin/ducklingdb start --addr :26257 --data /tmp/duck1 \
+  --peers :26257,:26258,:26259
 ```
 
 **Terminal 2 — join node**
 
 ```bash
-./bin/ducklingdb start --addr :26258 --data /tmp/duck2 --join :26257
+./bin/ducklingdb start --addr :26258 --data /tmp/duck2 --join :26257 \
+  --peers :26257,:26258,:26259
 ```
 
 **Terminal 3 — join node**
 
 ```bash
-./bin/ducklingdb start --addr :26259 --data /tmp/duck3 --join :26257
+./bin/ducklingdb start --addr :26259 --data /tmp/duck3 --join :26257 \
+  --peers :26257,:26258,:26259
 ```
+
+Start the bootstrap node first — a joining node exits if it can't reach a seed.
 
 Within a few seconds you'll see gossip log lines in each terminal as nodes exchange liveness and descriptor updates:
 
@@ -91,7 +101,17 @@ Within a few seconds you'll see gossip log lines in each terminal as nodes excha
 ./bin/ducklingdb status --addr :26257
 ```
 
-> Note: nodes share cluster metadata via gossip but do not replicate SQL data yet — that requires the Raft layer (M4).
+**Run SQL against the cluster** (separate terminal):
+
+```bash
+./bin/ducklingdb repl --addr :26258
+```
+
+Writes are replicated through Raft, so a table created via one node is readable
+through any other. Reads and writes are served by the Raft leader; a REPL
+pointed at a follower follows the redirect automatically.
+
+> Note: the cluster runs a single Raft group over the whole keyspace — range splits and a separate leaseholder role are M5 work.
 
 ## Milestones
 
@@ -100,8 +120,8 @@ Within a few seconds you'll see gossip log lines in each terminal as nodes excha
 | M1  | LSM Tree Storage Engine + MVCC + HLC         | Done    |
 | M2  | Single-Node ACID Transactions (SI/SSI)       | Done    |
 | M3  | gRPC Networking + Gossip Protocol + SQL REPL | Done    |
-| M4  | Raft Consensus + Ranges + Leases             | Planned |
-| M5  | Distributed Transactions + Concurrency       | Planned |
+| M4  | Raft Consensus (single group) + Snapshots    | Done    |
+| M5  | Ranges + Leases + Distributed Transactions   | Planned |
 | M6  | pgwire (psql compatibility)                  | Planned |
 
 ## Acknowledgements
